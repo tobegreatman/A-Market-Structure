@@ -11,12 +11,16 @@ export function fmt(value: number, digits = 2): string {
 
 export function signed(value: number, digits = 2): string {
   if (!Number.isFinite(value)) return '—';
-  return `${value > 0 ? '+' : ''}${fmt(value, digits)}`;
+  const threshold = 0.5 * 10 ** -digits;
+  const normalized = Math.abs(value) < threshold ? 0 : value;
+  return `${normalized > 0 ? '+' : ''}${fmt(normalized, digits)}`;
 }
 
 export function pct(value: number, digits = 2): string {
   if (!Number.isFinite(value)) return '—';
-  return `${value > 0 ? '+' : ''}${value.toFixed(digits)}%`;
+  const threshold = 0.5 * 10 ** -digits;
+  const normalized = Math.abs(value) < threshold ? 0 : value;
+  return `${normalized > 0 ? '+' : ''}${normalized.toFixed(digits)}%`;
 }
 
 export function toneOf(value: number): 'up' | 'down' | 'flat' {

@@ -1,4 +1,4 @@
-import type { CycleIndicator, CyclePayload } from '@am/contracts';
+import { AXIS_ANCHORS, GROWTH_WEIGHTS, INFLATION_WEIGHTS, type CycleIndicator, type CyclePayload } from '@am/contracts';
 import { api } from '../../lib/api';
 import { useAsync } from '../../lib/hooks';
 import { cx, fmt, pct, signed, toneOf } from '../../lib/format';
@@ -15,6 +15,13 @@ const QUADRANTS = [
   { id: 'stagflation', name: '滞胀', start: 0, end: 90, color: 'var(--clay)' },
   { id: 'recession', name: '衰退', start: 90, end: 180, color: 'var(--steel)' },
 ];
+
+const MACRO_SHORT: Record<string, string> = {
+  pmi: 'PMI',
+  afre: '社融',
+  cpi: 'CPI',
+  ppi: 'PPI',
+};
 
 function Clock({ clock }: { clock: CyclePayload['clock'] }) {
   const size = 348;
@@ -116,11 +123,17 @@ function Clock({ clock }: { clock: CyclePayload['clock'] }) {
         {clock.phase}
       </text>
       <text x={c} y={c + 18} textAnchor="middle" className="clock-sublabel">
-        {clock.x < 0 ? '低通胀' : '高通胀'} · {clock.y > 0 ? '增长上行' : '增长下行'}
+        {clock.x < -0.15 ? '低通胀' : clock.x > 0.15 ? '高通胀' : '通胀中性'} ·{' '}
+        {clock.y > 0.15 ? '增长上行' : clock.y < -0.15 ? '增长下行' : '增长走平'}
       </text>
       <circle cx={c} cy={c} r="2" fill="var(--brass)" />
     </svg>
   );
+}
+
+function anchorText(key: 'pmi' | 'afre' | 'cpi' | 'ppi', unit: string): string {
+  const anchor = AXIS_ANCHORS[key];
+  return `${anchor.center - anchor.half}/${anchor.center}/${anchor.center + anchor.half}${unit}`;
 }
 
 function IndicatorRow({ indicator }: { indicator: CycleIndicator }) {
@@ -137,7 +150,7 @@ function IndicatorRow({ indicator }: { indicator: CycleIndicator }) {
         </span>
         <Delta value={indicator.delta} suffix={indicator.unit} digits={1} arrow={false} />
       </div>
-      <Sparkline data={indicator.series} height={56} tone={indicator.key === 'ppi' ? 'down' : 'brass'} />
+      <Sparkline data={indicator.series} height={88} tone={indicator.key === 'ppi' ? 'down' : 'brass'} />
       <div className="indicator-foot">
         <span className="panel-note">{indicator.note}</span>
         <span className="indicator-pct num">分位 {indicator.percentile}%</span>
@@ -171,6 +184,9 @@ export function CyclePage() {
   }
 
   const active = data.clock.quadrants.find((q) => q.active) ?? data.clock.quadrants[0];
+  const model = data.clock.model;
+  const nextQuadrant =
+    QUADRANTS[(QUADRANTS.findIndex((q) => q.name === data.clock.phase) + 1) % QUADRANTS.length]?.name ?? '';
   const maxStyle = Math.max(...data.styleMatrix.map((s) => Math.abs(s.value)), 1);
 
   return (
@@ -182,7 +198,7 @@ export function CyclePage() {
         deck="先定位周期，再谈风格；先看信用，再谈估值。美林时钟给出象限，信用与库存给出斜率。"
         asOf={data.source.asOf}
         source={data.source}
-        note="宏观指标采用近 48 个月 · 演示数据"
+        note="坐标由 4 个宏观指标锚点加权 · 演示序列"
       />
 
       <div className="grid">
@@ -196,7 +212,7 @@ export function CyclePage() {
           foot={
             <>
               <span>当前：{data.clock.phase}</span>
-              <span>下一阶段：{data.clock.next.split('，')[0]}</span>
+              <span>下一阶段：{nextQuadrant}</span>
             </>
           }
         >
@@ -213,6 +229,32 @@ export function CyclePage() {
                 </span>
               ))}
             </div>
+
+            <div className="clock-model">
+              {[
+                { label: '增长', axis: data.clock.y, parts: model.growthParts },
+                { label: '通胀', axis: data.clock.x, parts: model.inflationParts },
+              ].map((row) => (
+                <div className="clock-axis-row" key={row.label} title={model.phaseReason}>
+                  <span className="clock-axis-name">
+                    {row.label} <b>{signed(row.axis, 2)}</b>
+                  </span>
+                  <span className="clock-axis-parts">
+                    {row.parts.map((part, index) => (
+                      <span key={part.key} title={part.formula}>
+                        {index > 0 && <span className="dim"> · </span>}
+                        {MACRO_SHORT[part.key] ?? part.label} {signed(part.score, 2)}×
+                        {Math.round(part.weight * 100)}%
+                      </span>
+                    ))}
+                  </span>
+                </div>
+              ))}
+              <p className="clock-margin">
+                距象限边界 {model.margin.toFixed(2)} · 模型 {model.version}
+              </p>
+            </div>
+
             <p className="clock-next">{data.clock.next}</p>
           </div>
         </Panel>
@@ -225,11 +267,41 @@ export function CyclePage() {
           bodyClass="tight fill"
           aside={<span className="panel-note">环比方向与历史分位</span>}
         >
-          <div className="indicator-grid">
-            {data.indicators.map((indicator) => (
-              <IndicatorRow key={indicator.key} indicator={indicator} />
-            ))}
+          <div className="dials-main">
+            <div className="indicator-grid">
+              {data.indicators.map((indicator) => (
+                <IndicatorRow key={indicator.key} indicator={indicator} />
+              ))}
+            </div>
+
+            <div className="axis-map">
+              <div className="axis-map-head">
+                <span className="label">坐标映射</span>
+                <span className="panel-note">0 = 中性 · ±1 = 锚点边界</span>
+              </div>
+              <div className="axis-map-row">
+                <span className="axis-map-name">增长</span>
+                <span>
+                  PMI {anchorText('pmi', '')} × {Math.round(GROWTH_WEIGHTS.pmi * 100)}%
+                </span>
+                <span>
+                  社融 {anchorText('afre', '%')} × {Math.round(GROWTH_WEIGHTS.afre * 100)}%
+                </span>
+                <span className="num">{signed(data.clock.y, 2)}</span>
+              </div>
+              <div className="axis-map-row">
+                <span className="axis-map-name">通胀</span>
+                <span>
+                  CPI {anchorText('cpi', '%')} × {Math.round(INFLATION_WEIGHTS.cpi * 100)}%
+                </span>
+                <span>
+                  PPI {anchorText('ppi', '%')} × {Math.round(INFLATION_WEIGHTS.ppi * 100)}%
+                </span>
+                <span className="num">{signed(data.clock.x, 2)}</span>
+              </div>
+            </div>
           </div>
+
           <div className="credit-band">
             <div>
               <span className="label">信用周期</span>
@@ -346,14 +418,15 @@ export function CyclePage() {
           sub="HISTORICAL ANALOG"
           className="span-12"
           bodyClass="tight"
-          aside={<span className="panel-note">基于增长、通胀、信用与风格的四维相似度</span>}
+          aside={<span className="panel-note">人工类比参考 · 未做模型相似度</span>}
+          foot={<span>相似度为人工评估，非模型输出；完成样本外验证前不称为「相似度」</span>}
         >
           <div className="analog-grid">
             {data.analogs.map((analog) => (
               <div className="analog-card" key={analog.period}>
                 <div className="analog-head">
                   <span className="analog-period display">{analog.period}</span>
-                  <span className="chip chip--brass">相似度 {analog.similarity}%</span>
+                  <span className="chip chip--brass">参考度 {analog.similarity}%</span>
                 </div>
                 <div className="analog-bar">
                   <Meter value={analog.similarity} tone="brass" height={4} />
@@ -367,8 +440,11 @@ export function CyclePage() {
             ))}
             <div className="analog-card analog-summary">
               <span className="label">周期结论</span>
-              <p className="serif">当前更像「复苏前段」，而非全面过热。结构上优先选择对信用敏感、且产业趋势独立的成长方向。</p>
-              <span className="panel-note">PPI 同比转正与社融回升，是切换到「过热」的两个确认信号。</span>
+              <p className="serif">
+                当前落在「{data.clock.phase}」象限（增长 {signed(data.clock.y, 2)}、通胀{' '}
+                {signed(data.clock.x, 2)}），结构上优先选择对信用敏感、且产业趋势独立的成长方向。
+              </p>
+              <span className="panel-note">{data.clock.next}</span>
             </div>
           </div>
         </Panel>

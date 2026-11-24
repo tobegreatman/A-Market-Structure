@@ -27,6 +27,24 @@ function shortName(theme: MarketTheme) {
   return theme.name.split(' · ')[0];
 }
 
+/** 估算 SVG 文本宽度：中文按字号，ASCII 按 0.58 字号 */
+function estimateTextWidth(text: string, size = 10.5): number {
+  let width = 0;
+  for (const char of text) width += /[\u4e00-\u9fa5]/.test(char) ? size : size * 0.58;
+  return width;
+}
+
+interface LabelBox {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+function overlaps(a: LabelBox, b: LabelBox, pad = 2): boolean {
+  return !(a.x2 < b.x1 - pad || a.x1 > b.x2 + pad || a.y2 < b.y1 - pad || a.y1 > b.y2 + pad);
+}
+
 function ThemeMatrix({
   themes,
   selected,
@@ -38,8 +56,9 @@ function ThemeMatrix({
 }) {
   const { ref, width } = useSize<HTMLDivElement>();
   const [hover, setHover] = useState<{ id: string; x: number; y: number } | null>(null);
-  const height = 452;
-  const pad = { left: 34, right: 20, top: 18, bottom: 34 };
+  const height = 532;
+  const pad = { left: 34, right: 20, top: 30, bottom: 34 };
+  const maxHeat = Math.max(...themes.map((theme) => theme.heat), 1);
 
   const pos = (theme: MarketTheme) => ({
     x: pad.left + (theme.crowding / 100) * (width - pad.left - pad.right),
@@ -48,6 +67,67 @@ function ThemeMatrix({
 
   if (!width) return <div ref={ref} className="chart-frame" style={{ height }} />;
   const hovered = themes.find((t) => t.id === hover?.id);
+
+  const plotLeft = pad.left;
+  const plotRight = width - pad.right;
+  const plotTop = pad.top;
+  const plotBottom = height - pad.bottom;
+  const radiusOf = (theme: MarketTheme) => 5 + Math.sqrt(theme.heat / maxHeat) * 9;
+
+  // 标签避让：先占住四个象限标题和所有气泡，再按强度顺序尝试右/左/上/下四个位置
+  const obstacles: LabelBox[] = [
+    { x1: plotLeft + 4, y1: plotTop + 2, x2: plotLeft + 140, y2: plotTop + 20 },
+    { x1: plotRight - 120, y1: plotTop + 2, x2: plotRight - 2, y2: plotTop + 20 },
+    { x1: plotLeft + 4, y1: plotBottom - 20, x2: plotLeft + 140, y2: plotBottom - 2 },
+    { x1: plotRight - 120, y1: plotBottom - 20, x2: plotRight - 2, y2: plotBottom - 2 },
+  ];
+  const bubbles = themes.map((theme) => {
+    const p = pos(theme);
+    const r = radiusOf(theme);
+    return { id: theme.id, x1: p.x - r, y1: p.y - r, x2: p.x + r, y2: p.y + r };
+  });
+
+  const labels = new Map<string, { x: number; y: number; anchor: 'start' | 'middle' | 'end' }>();
+  for (const theme of [...themes].sort((a, b) => b.strength - a.strength)) {
+    const p = pos(theme);
+    const r = radiusOf(theme);
+    const name = shortName(theme);
+    const sub = `${theme.strength} / ${theme.crowding}`;
+    const boxW = Math.max(estimateTextWidth(name), estimateTextWidth(sub, 9.5)) + 6;
+    const boxH = 27;
+    const candidates = [
+      { x: p.x + r + 5, y: p.y - 4, anchor: 'start' as const },
+      { x: p.x - r - 5, y: p.y - 4, anchor: 'end' as const },
+      { x: p.x, y: p.y - r - boxH - 4, anchor: 'middle' as const },
+      { x: p.x, y: p.y + r + 6, anchor: 'middle' as const },
+      { x: p.x + r * 0.7 + 4, y: p.y - r * 0.7 - boxH - 2, anchor: 'start' as const },
+      { x: p.x - r * 0.7 - 4, y: p.y - r * 0.7 - boxH - 2, anchor: 'end' as const },
+      { x: p.x + r * 0.7 + 4, y: p.y + r * 0.7 + 4, anchor: 'start' as const },
+      { x: p.x - r * 0.7 - 4, y: p.y + r * 0.7 + 4, anchor: 'end' as const },
+    ];
+    const placed = candidates.find((candidate) => {
+      const x1 =
+        candidate.anchor === 'start'
+          ? candidate.x
+          : candidate.anchor === 'end'
+            ? candidate.x - boxW
+            : candidate.x - boxW / 2;
+      const box: LabelBox = { x1, y1: candidate.y, x2: x1 + boxW, y2: candidate.y + boxH };
+      if (box.x1 < plotLeft + 2 || box.x2 > plotRight - 2 || box.y1 < plotTop + 2 || box.y2 > plotBottom - 2) {
+        return false;
+      }
+      if (obstacles.some((b) => overlaps(box, b))) return false;
+      return !bubbles.some((b) => b.id !== theme.id && overlaps(box, b));
+    });
+    if (placed) {
+      const x1 =
+        placed.anchor === 'start' ? placed.x : placed.anchor === 'end' ? placed.x - boxW : placed.x - boxW / 2;
+      obstacles.push({ x1, y1: placed.y, x2: x1 + boxW, y2: placed.y + boxH });
+      labels.set(theme.id, placed);
+    } else {
+      labels.set(theme.id, { x: p.x + r + 5, y: p.y - 4, anchor: 'start' });
+    }
+  }
 
   return (
     <div ref={ref} className="chart-frame" style={{ height }}>
@@ -78,13 +158,13 @@ function ThemeMatrix({
           主升区 · 强而不过热
         </text>
         <text x={width - pad.right - 7} y={pad.top + 14} className="matrix-quadrant" textAnchor="end">
-          过热区 · 警惕分歧
+          高位区 · 强而拥挤
         </text>
         <text x={pad.left + 7} y={height - pad.bottom - 8} className="matrix-quadrant">
-          观察区 · 等待催化
+          低位区 · 低强低拥挤
         </text>
         <text x={width - pad.right - 7} y={height - pad.bottom - 8} className="matrix-quadrant" textAnchor="end">
-          退潮区 · 降低暴露
+          退潮区 · 低强高拥挤
         </text>
 
         {[0, 25, 50, 75, 100].map((tick) => (
@@ -110,18 +190,20 @@ function ThemeMatrix({
         <text x={width - pad.right} y={height - 3} className="axis-label" textAnchor="end">
           拥挤度 →
         </text>
-        <text x={4} y={pad.top - 5} className="axis-label">
+        <text x={4} y={pad.top - 16} className="axis-label">
           ↑ 强度
         </text>
 
         {themes.map((theme) => {
           const p = pos(theme);
-          const r = 5 + Math.sqrt(theme.heat / 18.6) * 11;
+          const r = radiusOf(theme);
+          const label = labels.get(theme.id) ?? { x: p.x + r + 5, y: p.y - 4, anchor: 'start' as const };
           const active = theme.id === selected;
           const color = STAGE_COLOR[theme.stage];
           return (
             <g
               key={theme.id}
+              data-theme={theme.id}
               onClick={() => onSelect(theme.id)}
               onMouseEnter={() => setHover({ id: theme.id, x: p.x, y: p.y })}
               onMouseLeave={() => setHover(null)}
@@ -138,13 +220,14 @@ function ThemeMatrix({
                 strokeWidth={active ? 1.5 : 1}
               />
               <text
-                x={p.x + r + 5}
-                y={p.y + 3}
+                x={label.x}
+                y={label.y + 10}
+                textAnchor={label.anchor}
                 className={active ? 'matrix-label active' : 'matrix-label'}
               >
                 {shortName(theme)}
               </text>
-              <text x={p.x + r + 5} y={p.y + 14} className="matrix-label-sub">
+              <text x={label.x} y={label.y + 21} textAnchor={label.anchor} className="matrix-label-sub">
                 {theme.strength} / {theme.crowding}
               </text>
             </g>
@@ -164,6 +247,10 @@ function ThemeMatrix({
           <div className="tip-row">
             <span>拥挤度</span>
             <b>{hovered.crowding}</b>
+          </div>
+          <div className="tip-row">
+            <span>成交占比</span>
+            <b>{hovered.heat.toFixed(1)}%</b>
           </div>
           <div className="tip-row">
             <span>主力净流入</span>
@@ -206,12 +293,13 @@ function ThemeDetail({ theme, events }: { theme: MarketTheme; events: { date: st
           <h3 className="theme-detail-name serif">{theme.name}</h3>
         </div>
         <span className="theme-heat">
-          <span className="label">成交占比</span>
+          <span className="label">成交占比 · {theme.turnover} 亿</span>
           <span className="display">{theme.heat}%</span>
         </span>
       </div>
 
       <StageTrack stage={theme.stage} />
+      <p className="theme-stage-reason">{theme.model.stageReason}</p>
 
       <p className="theme-desc">{theme.description}</p>
 
@@ -234,6 +322,27 @@ function ThemeDetail({ theme, events }: { theme: MarketTheme; events: { date: st
           <span className="label">相关 ETF</span>
           <span className="num theme-etf">{theme.etf}</span>
         </div>
+      </div>
+
+      <div className="theme-score-notes">
+        <p>
+          <span className="label">强度构成</span>
+          {theme.model.strengthParts.map((part, index) => (
+            <span key={part.key} title={`${part.formula}${part.note ? ` · ${part.note}` : ''}`}>
+              {index > 0 && <span className="dim"> · </span>}
+              {part.label} <b>{Math.round(part.score)}</b>×{Math.round(part.weight * 100)}%
+            </span>
+          ))}
+        </p>
+        <p>
+          <span className="label">拥挤构成</span>
+          {theme.model.crowdingParts.map((part, index) => (
+            <span key={part.key} title={`${part.formula}${part.note ? ` · ${part.note}` : ''}`}>
+              {index > 0 && <span className="dim"> · </span>}
+              {part.label} <b>{Math.round(part.score)}</b>×{Math.round(part.weight * 100)}%
+            </span>
+          ))}
+        </p>
       </div>
 
       <div className="theme-columns">
@@ -331,7 +440,7 @@ export function MainlinesPage() {
         deck="主线不是涨幅榜，而是资金、逻辑与情绪在同一方向上持续共振。用强度 × 拥挤度判断它在周期的哪一段。"
         asOf={data.source.asOf}
         source={data.source}
-        note="强度：资金与涨幅的综合得分 · 拥挤度：成交与持仓的一致性"
+        note="强度/拥挤度公式化 · 阶段由 5 日动量派生"
       />
 
       <div className="brief-band">
@@ -350,11 +459,11 @@ export function MainlinesPage() {
           sub="STRENGTH × CROWDING"
           className="span-5 panel--lead"
           bodyClass="tight"
-          aside={<span className="panel-note">气泡 = 成交占比</span>}
+          aside={<span className="panel-note">气泡 = 成交占比 · 公式 {themes[0]?.model.version}</span>}
           foot={
             <>
               <span>点击气泡切换右侧解剖</span>
-              <span>数据显示四位整数 0-100</span>
+              <span>横轴拥挤度 · 纵轴强度 · 气泡=成交占比（成分可重叠，不做加总）</span>
             </>
           }
         >

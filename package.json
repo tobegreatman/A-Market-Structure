@@ -15,10 +15,12 @@
     "build": "npm run build -w @am/web",
     "preview": "npm run preview -w @am/web",
     "start": "npm run start -w @am/api",
+    "test": "tsx --test tests/*.test.ts",
     "typecheck": "npm run typecheck -w @am/web && npm run typecheck -w @am/api"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.4"
   },
   "engines": {
     "node": ">=20"

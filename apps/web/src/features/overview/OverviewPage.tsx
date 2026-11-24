@@ -1,6 +1,13 @@
 import { useId, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { DistributionBucket, IndexQuote, IntradayPoint, SectorSnapshot } from '@am/contracts';
+import type {
+  DistributionBucket,
+  IndexQuote,
+  IntradayPoint,
+  SectorSnapshot,
+  SentimentReading,
+  SessionState,
+} from '@am/contracts';
 import { api } from '../../lib/api';
 import { useAsync, useSize } from '../../lib/hooks';
 import {
@@ -18,6 +25,13 @@ import { Sparkline } from '../../components/Sparkline';
 import { Delta } from '../../components/Delta';
 import { Meter } from '../../components/Meter';
 import { ArrowUpRight } from '../../components/Icons';
+
+const SESSION_NOTE: Record<SessionState, string> = {
+  pre: '集合竞价',
+  open: '盘中',
+  break: '午间休市',
+  closed: '15:00 收盘',
+};
 
 /* --------------------------------- 指数卡 -------------------------------- */
 
@@ -253,6 +267,62 @@ function DistributionChart({ data }: { data: DistributionBucket[] }) {
   );
 }
 
+/* -------------------------------- 情绪结构 ------------------------------- */
+
+function percentileTone(percentile: number): 'up' | 'down' | 'brass' {
+  if (percentile >= 60) return 'up';
+  if (percentile <= 40) return 'down';
+  return 'brass';
+}
+
+function SentimentBreakdown({ reading }: { reading: SentimentReading }) {
+  return (
+    <>
+      <div className="sent-grid">
+        {reading.factors.map((factor) => (
+          <div
+            className="sent-factor"
+            key={factor.key}
+            title={`${factor.formula} · 252 日 P25–P75：${fmt(factor.historyP25, factor.digits)}–${fmt(
+              factor.historyP75,
+              factor.digits,
+            )}${factor.unit} · 中位 ${fmt(factor.historyMedian, factor.digits)}${factor.unit}`}
+          >
+            <div className="sent-factor-head">
+              <span className="label">{factor.label}</span>
+              <span className="panel-note">{Math.round(factor.weight * 100)}%</span>
+            </div>
+            <div className="sent-factor-value">
+              <span className="num">
+                {fmt(factor.value, factor.digits)}
+                <span className="sent-unit">{factor.unit}</span>
+              </span>
+              <span
+                className={cx(
+                  'sent-rank',
+                  factor.percentile >= 60 ? 'text-up' : factor.percentile <= 40 ? 'text-down' : 'dim',
+                )}
+              >
+                {factor.percentile} 分位
+              </span>
+            </div>
+            <Meter value={factor.percentile} tone={percentileTone(factor.percentile)} height={3} />
+            <div className="sent-factor-foot">
+              <span className="dim">
+                中位 {fmt(factor.historyMedian, factor.digits)}
+                {factor.unit}
+              </span>
+              <span className="dim">贡献 {factor.contribution}</span>
+            </div>
+            <span className="sent-formula">{factor.formula}</span>
+          </div>
+        ))}
+      </div>
+      <p className="sent-caveat">{reading.caveat}</p>
+    </>
+  );
+}
+
 /* -------------------------------- 行业热力 ------------------------------- */
 
 function SectorHeatmap({ sectors }: { sectors: SectorSnapshot[] }) {
@@ -365,12 +435,14 @@ export function OverviewPage() {
   const upRatio = percentOf(breadth.up, breadth.up + breadth.down + breadth.flat);
   const turnoverChange = ((breadth.turnover - breadth.prevTurnover) / breadth.prevTurnover) * 100;
   const sealRate = (breadth.limitUp / (breadth.limitUp + breadth.broken)) * 100;
-  const temperature = Math.round(clamp(upRatio * 0.6 + sealRate * 0.4, 0, 100));
+  const hs300 = indices.find((i) => i.code === '000300') ?? indices[0];
+  const emotionClass = breadth.temperature >= 80 ? 'chip--up' : breadth.temperature < 40 ? 'chip--down' : 'chip--brass';
   const inflowTop = [...sectors].sort((a, b) => b.netInflow - a.netInflow).slice(0, 4);
   const outflow = [...sectors].sort((a, b) => a.netInflow - b.netInflow).slice(0, 3);
   const maxFlow = Math.max(...sectors.map((s) => Math.abs(s.netInflow)));
   const intradayPoints = data.intraday.points;
   const latest = intradayPoints[intradayPoints.length - 1];
+  const latestTone = toneOf(latest.price - data.intraday.prevClose);
   const amplitude = ((Math.max(...intradayPoints.map((p) => p.price)) - Math.min(...intradayPoints.map((p) => p.price))) / data.intraday.prevClose) * 100;
   const insightTargets = ['/flow', '/mainlines', '/flow', '/mainlines'];
 
@@ -393,10 +465,12 @@ export function OverviewPage() {
           sub="INDEX"
           className="span-8 panel--lead"
           bodyClass="flush"
-          aside={<span className="panel-note">15:00 收盘</span>}
+          aside={<span className="panel-note">{SESSION_NOTE[data.session]}</span>}
           foot={
             <>
-              <span>沪深300 4,521.88 · +0.71%</span>
+              <span>
+                {hs300.name} {fmt(hs300.value)} · {pct(hs300.changePct)}
+              </span>
               <span>
                 上涨占比 <b className="text-up">{upRatio}%</b> · 成交较昨日{' '}
                 <b className={turnoverChange >= 0 ? 'text-up' : 'text-down'}>{pct(turnoverChange, 1)}</b>
@@ -418,8 +492,8 @@ export function OverviewPage() {
               <div className="breadth-ratio display">{(breadth.up / breadth.down).toFixed(2)}</div>
             </div>
             <div className="breadth-hero-right">
-              <span className="chip chip--brass">情绪偏强</span>
-              <span className="panel-note">上涨家数占优</span>
+              <span className={cx('chip', emotionClass)}>情绪{breadth.emotion}</span>
+              <span className="panel-note">{upRatio >= 50 ? '上涨家数占优' : '下跌家数占优'}</span>
             </div>
           </div>
 
@@ -455,15 +529,15 @@ export function OverviewPage() {
 
           <div className="thermo">
             <div className="thermo-head">
-              <span className="label">情绪温度</span>
-              <span className="num">{temperature}</span>
+              <span className="label">情绪温度 · 6 分项</span>
+              <span className="num">{breadth.temperature}</span>
             </div>
             <div className="thermo-track">
-              <span className="thermo-marker" style={{ left: `${temperature}%` }} />
+              <span className="thermo-marker" style={{ left: `${breadth.temperature}%` }} />
             </div>
             <div className="thermo-labels">
               <span>冰点</span>
-              <span>温和</span>
+              <span>中性</span>
               <span>过热</span>
             </div>
           </div>
@@ -493,14 +567,14 @@ export function OverviewPage() {
           foot={
             <>
               <span>振幅 {amplitude.toFixed(2)}% · 均价 {fmt(latest.avg)}</span>
-              <span>09:30 — 15:00 · 1 分钟采样</span>
+              <span>09:30 — 15:00 · {intradayPoints.length} 点 · 1 分钟采样</span>
             </>
           }
         >
           <div className="chart-meta">
             <div>
               <span className="label">最新</span>
-              <span className="num text-up">{fmt(latest.price)}</span>
+              <span className={cx('num', `text-${latestTone}`)}>{fmt(latest.price)}</span>
             </div>
             <div>
               <span className="label">均价</span>
@@ -533,6 +607,37 @@ export function OverviewPage() {
       <div className="grid">
         <Panel
           idx="05"
+          title="情绪结构"
+          sub="SENTIMENT · 6 FACTORS"
+          className="span-12"
+          bodyClass="tight"
+          aside={
+            <div className="legend">
+              <span className="legend-item text-brass">
+                温度 {breadth.temperature} · {breadth.emotion}
+              </span>
+              <span className="legend-item dim">分位模型 {breadth.sentiment.version}</span>
+            </div>
+          }
+          foot={
+            <>
+              <span>
+                温度 = Σ（分位 × 权重）= {breadth.sentiment.score.toFixed(1)} → {breadth.temperature}
+              </span>
+              <span>
+                分位窗口 {breadth.sentiment.window} 个交易日 · 不含今日
+                {data.source.mode === 'demo' ? ' · 演示样本' : ''}
+              </span>
+            </>
+          }
+        >
+          <SentimentBreakdown reading={breadth.sentiment} />
+        </Panel>
+      </div>
+
+      <div className="grid">
+        <Panel
+          idx="06"
           title="行业热力"
           sub="SECTOR HEATMAP"
           className="span-8"
@@ -559,7 +664,7 @@ export function OverviewPage() {
           <SectorHeatmap sectors={sectors} />
         </Panel>
 
-        <Panel idx="06" title="资金与梯队" sub="CAPITAL / LADDER" className="span-4" bodyClass="tight">
+        <Panel idx="07" title="资金与梯队" sub="CAPITAL / LADDER" className="span-4" bodyClass="tight">
           <div className="mini-head">
             <span className="label">主力净流入</span>
             <span className="panel-note">亿元</span>
@@ -606,7 +711,7 @@ export function OverviewPage() {
       </div>
 
       <div className="grid">
-        <Panel idx="07" title="结构速读" sub="STRUCTURE NOTES" className="span-12" bodyClass="flush">
+        <Panel idx="08" title="结构速读" sub="STRUCTURE NOTES" className="span-12" bodyClass="flush">
           <div className="insight-grid">
             {data.insights.map((insight, index) => (
               <Link className="insight" to={insightTargets[index] ?? '/'} key={insight}>

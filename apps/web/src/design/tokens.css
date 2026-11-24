@@ -70,10 +70,16 @@
   --steel-soft: rgba(127, 166, 196, 0.14);
   --clay: #cf8a63;
 
-  --font-display: 'Bodoni Moda', 'Noto Serif SC', 'Songti SC', serif;
-  --font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
-  --font-sans: 'Noto Sans SC', 'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei', sans-serif;
-  --font-mono: 'DM Mono', 'SFMono-Regular', 'JetBrains Mono', Consolas, monospace;
+  /* 字族：拉丁字面自托管（见 fonts.css），中文交给系统字体。
+     中文 webfont 单个字重约 8MB，四个字重超过 30MB，而系统自带的
+     思源黑体/PingFang/微软雅黑在 12–14px 正文字号下显示更清晰，
+     因此中文字符刻意不下载，只保证回退顺序覆盖三大平台。 */
+  --font-display: 'Bodoni Moda Variable', 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', serif;
+  --font-serif: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', 'SimSun', 'Noto Serif CJK SC', serif;
+  --font-sans:
+    'Noto Sans SC', 'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei', 'Hiragino Sans GB',
+    'Source Han Sans SC', 'Noto Sans CJK SC', sans-serif;
+  --font-mono: 'DM Mono', 'SFMono-Regular', 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
 
   --rail: 84px;
   --page-pad: clamp(18px, 2.1vw, 36px);

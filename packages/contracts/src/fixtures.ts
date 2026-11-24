@@ -1,5 +1,6 @@
 import type {
   Candle,
+  CapitalSplit,
   ChipLevel,
   CycleIndicator,
   CyclePayload,
@@ -14,7 +15,9 @@ import type {
   IndexQuote,
   IntradayPoint,
   KnowledgeTopic,
+  LadderGroup,
   MainlinePayload,
+  MarketBreadth,
   MarketOverview,
   MarketTheme,
   MockDataset,
@@ -27,6 +30,9 @@ import type {
   UniverseEdge,
   UniversePayload,
 } from './types';
+import { buildSentiment } from './sentiment';
+import { buildThemeModel } from './mainline';
+import { buildCycleModel } from './cycle';
 
 /* ------------------------------- 基础工具 ------------------------------- */
 
@@ -76,22 +82,40 @@ function monthDates(n: number): string[] {
   return out;
 }
 
-/** 生成一条终点精确落在 end 上的带漂移随机游走序列 */
-function walkTo(seed: number, n: number, end: number, vol: number, drift = 0): number[] {
-  const r = rng(seed);
-  const raw: number[] = [];
-  let acc = 0;
-  for (let i = 0; i < n; i++) {
-    acc += (r() - 0.5) * vol + drift;
-    raw.push(acc);
-  }
-  const offset = end - raw[n - 1];
-  return raw.map((v) => v + offset);
+function percentileOf(series: number[], value: number): number {
+  const history = series.slice(0, -1);
+  const pool = history.length ? history : series;
+  const below = pool.filter((v) => v <= value).length;
+  return Math.round((below / pool.length) * 100);
 }
 
-function percentileOf(series: number[], value: number): number {
-  const below = series.filter((v) => v <= value).length;
-  return Math.round((below / series.length) * 100);
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+/** 把 total 按 weights 分成一组整数，且和恰为 total */
+function allocate(total: number, weights: number[]): number[] {
+  if (total <= 0) return weights.map(() => 0);
+  const sum = weights.reduce((a, b) => a + b, 0);
+  const raw = weights.map((w) => (w / sum) * total);
+  const base = raw.map(Math.floor);
+  const remainder = total - base.reduce((a, b) => a + b, 0);
+  const order = raw
+    .map((v, i) => ({ frac: v - Math.floor(v), i }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let k = 0; k < remainder; k++) base[order[k % order.length].i] += 1;
+  return base;
+}
+
+/** 一条首尾固定的桥接序列，用于指数迷你走势：起点=昨收，终点=现价 */
+function bridgeSeries(seed: number, n: number, start: number, end: number, vol: number): number[] {
+  const r = rng(seed);
+  const noise = [0];
+  for (let i = 1; i < n; i++) noise.push(noise[i - 1] + (r() - 0.5) * vol);
+  const last = noise[n - 1];
+  return Array.from({ length: n }, (_, i) =>
+    round(start + ((end - start) * i) / (n - 1) + noise[i] - (last * i) / (n - 1), 2),
+  );
 }
 
 /* -------------------------------- 盘面 -------------------------------- */
@@ -115,7 +139,7 @@ const INDEX_SEEDS: IndexSeed[] = [
 function buildIndices(): IndexQuote[] {
   return INDEX_SEEDS.map((s, idx) => {
     const prevClose = round(s.value / (1 + s.pct / 100), 2);
-    const spark = walkTo(31 + idx, 48, s.value, s.value * 0.0025, -0.15).map((v) => round(v, 2));
+    const spark = bridgeSeries(31 + idx, 48, prevClose, s.value, s.value * 0.0016);
     return {
       code: s.code,
       name: s.name,
@@ -185,7 +209,9 @@ function buildSectors(): SectorSnapshot[] {
   })).sort((a, b) => b.changePct - a.changePct);
 }
 
-function buildDistribution(total: number): DistributionBucket[] {
+function buildDistribution(
+  breadth: Pick<MarketBreadth, 'up' | 'down' | 'flat' | 'limitUp' | 'limitDown'>,
+): DistributionBucket[] {
   const labels = [
     '跌停',
     '≤-7%',
@@ -201,14 +227,12 @@ function buildDistribution(total: number): DistributionBucket[] {
     '≥7%',
     '涨停',
   ];
-  const weights = [1, 1.4, 2.2, 4.8, 12.5, 22.4, 3.0, 24.6, 15.2, 6.4, 3.6, 1.9, 1.0];
-  const sum = weights.reduce((a, b) => a + b, 0);
-  let acc = 0;
-  return labels.map((label, i) => {
-    const count = i === labels.length - 1 ? total - acc : Math.round((weights[i] / sum) * total);
-    acc += count;
-    return { label, count: Math.max(1, count) };
-  });
+  const downRest = Math.max(0, breadth.down - breadth.limitDown);
+  const upRest = Math.max(0, breadth.up - breadth.limitUp);
+  const downBuckets = allocate(downRest, [1.4, 2.2, 4.8, 12.5, 22.4]);
+  const upBuckets = allocate(upRest, [24.6, 15.2, 6.4, 3.6, 1.9]);
+  const counts = [breadth.limitDown, ...downBuckets, breadth.flat, ...upBuckets, breadth.limitUp];
+  return labels.map((label, i) => ({ label, count: counts[i] }));
 }
 
 function buildIntraday(prevClose: number, target: number, seed: number): IntradayPoint[] {
@@ -248,10 +272,26 @@ function buildIntraday(prevClose: number, target: number, seed: number): Intrada
   });
 }
 
+/** 前 5 个交易日成交额（亿元），末位等于昨收日成交额 */
+const TURNOVER_HISTORY = [16420.5, 16880.2, 17412.6, 16204.8, 17238.4];
+
+/** 昨日涨停股今日平均涨幅（%）。真实环境由个股级行情计算，演示快照为固定输入 */
+const PREMIUM_TODAY = 2.63;
+
+const LADDER_GROUPS: LadderGroup[] = [
+  { level: '5板', stocks: ['华胜天成', '太辰光'] },
+  { level: '3板', stocks: ['剑桥科技', '科华数据', '润建股份'] },
+  { level: '2板', stocks: ['中贝通信', '恒润股份', '光智科技', '拓维信息', '常山北明'] },
+  {
+    level: '首板',
+    stocks: ['东山精密', '沪电股份', '胜宏科技', '工业富联', '沃尔核材', '英维克', '申菱环境', '高澜股份'],
+  },
+];
+
 function buildOverview(): MarketOverview {
   const indices = buildIndices();
   const sectors = buildSectors();
-  const breadth = {
+  const counts = {
     up: 3241,
     down: 1826,
     flat: 158,
@@ -259,40 +299,65 @@ function buildOverview(): MarketOverview {
     limitDown: 9,
     broken: 21,
     turnover: 18642.8,
-    prevTurnover: 17238.4,
+    prevTurnover: TURNOVER_HISTORY[TURNOVER_HISTORY.length - 1],
     marginBalance: 19246.5,
     northboundTurnover: 1842.6,
   };
+  const totalStocks = counts.up + counts.down + counts.flat;
+  const upRatio = totalStocks ? (counts.up / totalStocks) * 100 : 0;
+  const sealRate = counts.limitUp + counts.broken ? (counts.limitUp / (counts.limitUp + counts.broken)) * 100 : 0;
+  const maxBoard = Math.max(...LADDER_GROUPS.map((g) => Number.parseInt(g.level, 10) || 1));
+  const turnoverMa5 = round(TURNOVER_HISTORY.reduce((a, b) => a + b, 0) / TURNOVER_HISTORY.length, 1);
+  const sentiment = buildSentiment({
+    up: counts.up,
+    down: counts.down,
+    flat: counts.flat,
+    limitUp: counts.limitUp,
+    limitDown: counts.limitDown,
+    broken: counts.broken,
+    maxBoard,
+    premium: PREMIUM_TODAY,
+    turnover: counts.turnover,
+    turnoverMa5,
+  });
+  const breadth: MarketBreadth = {
+    ...counts,
+    turnoverMa5,
+    maxBoard,
+    premium: PREMIUM_TODAY,
+    sentiment,
+    temperature: sentiment.temperature,
+    emotion: sentiment.emotion,
+  };
   const totalPct = round(((breadth.turnover - breadth.prevTurnover) / breadth.prevTurnover) * 100, 1);
-  const inflow = round(SECTOR_SEEDS.reduce((a, s) => a + Math.max(0, s[2]), 0), 1);
+  const topTwo = [...sectors].sort((a, b) => b.netInflow - a.netInflow).slice(0, 2);
+  const topTwoSum = round(topTwo.reduce((a, s) => a + s.netInflow, 0), 1);
+  const positiveSum = round(sectors.filter((s) => s.netInflow > 0).reduce((a, s) => a + s.netInflow, 0), 1);
+  const byPercentile = [...sentiment.factors].sort((a, b) => b.percentile - a.percentile);
+  const hottest = byPercentile.slice(0, 2);
+  const coldest = byPercentile[byPercentile.length - 1];
   return {
     asOf: AS_OF,
     session: 'closed',
     sessionLabel: '已收盘',
     indices,
     breadth,
-    distribution: buildDistribution(breadth.up + breadth.down + breadth.flat),
+    distribution: buildDistribution(breadth),
     intraday: {
       index: '上证指数',
       prevClose: indices[0].prevClose,
       points: buildIntraday(indices[0].prevClose, indices[0].value, 77),
     },
     sectors,
-    capital: { superLarge: 118.6, large: 63.8, medium: -22.4, small: -17.7 },
-    ladders: [
-      { level: '5板', stocks: ['华胜天成', '太辰光'] },
-      { level: '3板', stocks: ['剑桥科技', '科华数据', '润建股份'] },
-      { level: '2板', stocks: ['中贝通信', '恒润股份', '光智科技', '拓维信息', '常山北明'] },
-      {
-        level: '首板',
-        stocks: ['东山精密', '沪电股份', '胜宏科技', '工业富联', '沃尔核材', '英维克', '申菱环境', '高澜股份'],
-      },
-    ],
+    capital: { superLarge: 88.6, large: 53.7, medium: -22.4, small: -17.7 },
+    ladders: LADDER_GROUPS,
     insights: [
-      `电子与通信合计吸走 ${round(86.4 + 64.2, 1)} 亿元主力资金，占全市场净流入的一半以上，结构高度收敛于算力链。`,
-      `涨跌比 ${round(breadth.up / breadth.down, 2)}，但个股涨幅中位数仅 +0.31%，普涨之下仍是结构性行情。`,
+      `${topTwo.map((s) => s.name).join('与')}合计净流入 ${topTwoSum} 亿元，占全部净流入行业的 ${positiveSum ? round((topTwoSum / positiveSum) * 100, 1) : 0}%，结构高度收敛于算力链。`,
+      `涨跌比 ${round(breadth.up / breadth.down, 2)}，上涨家数占 ${round(upRatio, 1)}%，普涨之下仍是结构性行情。`,
       `成交额 ${(breadth.turnover / 10000).toFixed(2)} 万亿，较昨日放量 ${totalPct}%，增量资金优先选择了高景气方向。`,
-      `涨停 ${breadth.limitUp} 家、炸板 ${breadth.broken} 家，封板率 ${round((breadth.limitUp / (breadth.limitUp + breadth.broken)) * 100, 1)}%，情绪处于温和偏强区间。`,
+      `涨停 ${breadth.limitUp} 家、炸板 ${breadth.broken} 家，封板率 ${round(sealRate, 1)}%；情绪温度 ${sentiment.temperature}（${sentiment.emotion}），${hottest
+        .map((f) => f.label)
+        .join('、')}分位最高，${coldest.percentile >= 50 ? '六个分项均在历史中位以上' : `${coldest.label}仅 ${coldest.percentile} 分位`}。`,
     ],
     source: { provider: '演示数据 · 结构引擎', mode: 'demo', asOf: AS_OF, note: '内置确定性行情快照，用于界面与交互验证' },
   };
@@ -302,32 +367,81 @@ function buildOverview(): MarketOverview {
 
 const FLOW_INDUSTRIES = ['电子', '通信', '电力设备', '计算机', '有色金属', '医药生物', '汽车', '机械设备'];
 
-function buildFlowPeriods(sectors: SectorSnapshot[]): FlowPeriod[] {
-  const specs: { key: FlowPeriodKey; label: string; factor: number; pctFactor: number; seed: number }[] = [
-    { key: '1d', label: '今日', factor: 1, pctFactor: 1, seed: 101 },
-    { key: '5d', label: '5日', factor: 4.15, pctFactor: 2.1, seed: 102 },
-    { key: '10d', label: '10日', factor: 7.05, pctFactor: 3.2, seed: 103 },
-    { key: '20d', label: '20日', factor: 12.6, pctFactor: 4.4, seed: 104 },
+function sumTail(values: number[], days: number): number {
+  return values.slice(-days).reduce((a, b) => a + b, 0);
+}
+
+/**
+ * 生成 20 个交易日的行业资金日序列；1d / 5d / 10d / 20d 都是同一序列的滚动累加，
+ * 不再用「1 日 × 系数」伪造多周期。
+ */
+function buildDailyFlowSeries(
+  sectors: SectorSnapshot[],
+  capital: CapitalSplit,
+): { main: number[]; superNet: number[]; change: number[] }[] {
+  const horizon = 20;
+  const targetMain = round(capital.superLarge + capital.large, 2);
+  const rawSum = round(sectors.reduce((a, s) => a + s.netInflow, 0), 2);
+  const mainScale = rawSum === 0 ? 1 : targetMain / rawSum;
+
+  const series = sectors.map((s, idx) => {
+    const r = rng(900 + idx);
+    const base = s.netInflow * mainScale;
+    const main: number[] = [];
+    const change: number[] = [];
+    for (let d = 0; d < horizon - 1; d++) {
+      main.push(base * (0.55 + r() * 1.1));
+      change.push(s.changePct * (0.4 + r() * 1.2));
+    }
+    main.push(base);
+    change.push(s.changePct);
+    return { main, change };
+  });
+
+  const shares = sectors.map((_, idx) => {
+    const r = rng(1300 + idx);
+    return 0.56 + r() * 0.16;
+  });
+  const todaySuperRaw = sectors.reduce((a, s, i) => a + s.netInflow * mainScale * shares[i], 0);
+  const superScale = todaySuperRaw === 0 ? 1 : capital.superLarge / todaySuperRaw;
+
+  return series.map((s, i) => ({
+    main: s.main,
+    superNet: s.main.map((v) => v * shares[i] * superScale),
+    change: s.change,
+  }));
+}
+
+function buildFlowPeriods(sectors: SectorSnapshot[], capital: CapitalSplit): FlowPeriod[] {
+  const daily = buildDailyFlowSeries(sectors, capital);
+  const specs: { key: FlowPeriodKey; label: string; days: number; seed: number }[] = [
+    { key: '1d', label: '今日', days: 1, seed: 101 },
+    { key: '5d', label: '5日', days: 5, seed: 102 },
+    { key: '10d', label: '10日', days: 10, seed: 103 },
+    { key: '20d', label: '20日', days: 20, seed: 104 },
   ];
   return specs.map((spec) => {
     const r = rng(spec.seed);
-    const industries: IndustryFlowRow[] = sectors.map((s) => {
-      const jitter = spec.key === '1d' ? 1 : 0.62 + r() * 0.8;
-      const mainNet = round(s.netInflow * spec.factor * jitter, 2);
-      const superNet = round(mainNet * (0.58 + r() * 0.18), 2);
-      return {
-        name: s.name,
-        changePct: round(s.changePct * spec.pctFactor * (0.7 + r() * 0.5), 2),
-        mainNet,
-        superNet,
-        largeNet: round(mainNet - superNet, 2),
-        mainNetRange: round(mainNet * (0.82 + r() * 0.4), 2),
-        ratio: round((mainNet / s.turnover) * 100 * (spec.key === '1d' ? 1 : 1.4), 2),
-        turnover: s.turnover,
-        leader: s.leader,
-        leaderPct: round(s.leaderPct * (0.8 + r() * 0.5), 2),
-      };
-    }).sort((a, b) => b.mainNet - a.mainNet);
+    const industries: IndustryFlowRow[] = sectors
+      .map((s, idx) => {
+        const d = daily[idx];
+        const mainNet = round(sumTail(d.main, spec.days), 2);
+        const superNet = round(sumTail(d.superNet, spec.days), 2);
+        const turnover = round(s.turnover * spec.days, 2);
+        return {
+          name: s.name,
+          changePct: round(sumTail(d.change, spec.days), 2),
+          mainNet,
+          superNet,
+          largeNet: round(mainNet - superNet, 2),
+          mainNetRange: round(sumTail(d.main, 20), 2),
+          ratio: round(turnover > 0 ? (mainNet / turnover) * 100 : 0, 2),
+          turnover,
+          leader: s.leader,
+          leaderPct: spec.days === 1 ? s.leaderPct : round(s.leaderPct * spec.days * (0.8 + r() * 0.4), 2),
+        };
+      })
+      .sort((a, b) => b.mainNet - a.mainNet);
     const totalSuperNet = round(industries.reduce((a, i) => a + i.superNet, 0), 2);
     return {
       key: spec.key,
@@ -401,7 +515,7 @@ function buildFlowHistory(): FlowPayload['history'] {
 
 function buildFlow(overview: MarketOverview): FlowPayload {
   return {
-    periods: buildFlowPeriods(overview.sectors),
+    periods: buildFlowPeriods(overview.sectors, overview.capital),
     sankey: buildSankey(),
     capital: overview.capital,
     marginBalance: overview.breadth.marginBalance,
@@ -413,15 +527,24 @@ function buildFlow(overview: MarketOverview): FlowPayload {
 
 /* -------------------------------- 市场主线 -------------------------------- */
 
-const THEME_SEEDS: MarketTheme[] = [
+interface ThemeSeed
+  extends Omit<MarketTheme, 'changePct' | 'heat' | 'strength' | 'crowding' | 'stage' | 'model'> {
+  /** 成分股成交额，亿元 */
+  turnover: number;
+  /** 成分股自由流通市值，亿元 */
+  floatCap: number;
+  /** 主题内涨停家数 */
+  limitUp: number;
+}
+
+const THEME_SEEDS: ThemeSeed[] = [
   {
     id: 'ai-optics',
     name: 'AI算力 · 光互联',
     alias: 'OPTICAL INTERCONNECT',
-    stage: '加速',
-    strength: 92,
-    crowding: 76,
-    heat: 18.6,
+    turnover: 520,
+    floatCap: 11000,
+    limitUp: 7,
     inflow: 96.2,
     description: '海外算力资本开支上修叠加 1.6T 光模块放量，业绩兑现与产业趋势同向共振。',
     catalysts: ['北美云厂商上调 2027 资本开支', '1.6T 模块进入批量交付', 'CPO 交换机路线落地'],
@@ -438,10 +561,9 @@ const THEME_SEEDS: MarketTheme[] = [
     id: 'solid-battery',
     name: '固态电池',
     alias: 'SOLID-STATE BATTERY',
-    stage: '发酵',
-    strength: 84,
-    crowding: 52,
-    heat: 12.4,
+    turnover: 310,
+    floatCap: 16000,
+    limitUp: 4,
     inflow: 41.8,
     description: '半固态装车与全固态中试线落地，材料体系从 0 到 1，设备与电解质先行受益。',
     catalysts: ['头部电池厂中试线招标', '硫化物电解质送样', '车企半固态装车计划'],
@@ -458,10 +580,9 @@ const THEME_SEEDS: MarketTheme[] = [
     id: 'humanoid',
     name: '人形机器人',
     alias: 'HUMANOID ROBOTICS',
-    stage: '分歧',
-    strength: 71,
-    crowding: 66,
-    heat: 9.8,
+    turnover: 240,
+    floatCap: 6000,
+    limitUp: 2,
     inflow: 12.6,
     description: '量产预期反复，丝杠与减速器环节订单能见度分化，资金开始向确定性收敛。',
     catalysts: ['头部厂商量产指引', '灵巧手方案迭代', '供应链定点公告'],
@@ -478,10 +599,9 @@ const THEME_SEEDS: MarketTheme[] = [
     id: 'semis',
     name: '半导体设备',
     alias: 'SEMICONDUCTOR CAPEX',
-    stage: '加速',
-    strength: 78,
-    crowding: 58,
-    heat: 8.2,
+    turnover: 200,
+    floatCap: 13000,
+    limitUp: 3,
     inflow: 24.4,
     description: '先进制程扩产与国产化率提升共振，设备公司订单与合同负债同步改善。',
     catalysts: ['晶圆厂资本开支上修', '刻蚀/薄膜设备验证通过', '大基金三期落地'],
@@ -498,10 +618,9 @@ const THEME_SEEDS: MarketTheme[] = [
     id: 'innovative-drug',
     name: '创新药出海',
     alias: 'GLOBAL INNOVATION',
-    stage: '发酵',
-    strength: 69,
-    crowding: 42,
-    heat: 6.8,
+    turnover: 150,
+    floatCap: 9500,
+    limitUp: 2,
     inflow: 9.4,
     description: 'License-out 交易持续放量，国内创新药资产被全球定价，估值体系正在重估。',
     catalysts: ['大额 BD 授权落地', '海外 III 期数据读出', '医保谈判温和'],
@@ -510,7 +629,7 @@ const THEME_SEEDS: MarketTheme[] = [
     leaders: [
       { name: '恒瑞医药', code: '600276', changePct: 3.24, tag: '龙头' },
       { name: '百济神州', code: '688235', changePct: 2.18, tag: '出海' },
-      { name: '信达生物', code: '01801', changePct: 1.86, tag: 'BD' },
+      { name: '荣昌生物', code: '688331', changePct: 1.86, tag: 'BD' },
     ],
     spark: [28, 30, 33, 31, 38, 42, 40, 46, 52, 55, 53, 58, 61, 59, 63, 66, 64, 67, 68, 69],
   },
@@ -518,12 +637,11 @@ const THEME_SEEDS: MarketTheme[] = [
     id: 'fusion',
     name: '可控核聚变',
     alias: 'FUSION ENERGY',
-    stage: '萌芽',
-    strength: 57,
-    crowding: 28,
-    heat: 2.6,
+    turnover: 70,
+    floatCap: 2200,
+    limitUp: 2,
     inflow: 4.2,
-    description: '工程堆招标与高温超导带材扩产，主题处于早期认知扩散阶段，波动大但赔率可观。',
+    description: '工程堆招标与高温超导带材扩产，主题从早期认知转向订单验证，波动大但赔率可观。',
     catalysts: ['聚变工程堆招标', '高温超导带材扩产', '国际合作项目落地'],
     risk: '商业化周期长，短期难以证伪，交易属性强于基本面。',
     etf: '核电ETF 561260',
@@ -538,10 +656,9 @@ const THEME_SEEDS: MarketTheme[] = [
     id: 'low-altitude',
     name: '低空经济',
     alias: 'LOW ALTITUDE',
-    stage: '退潮',
-    strength: 42,
-    crowding: 34,
-    heat: 3.1,
+    turnover: 80,
+    floatCap: 7000,
+    limitUp: 0,
     inflow: -6.8,
     description: '政策密度下降，订单落地慢于预期，资金撤离后进入震荡出清阶段。',
     catalysts: ['地方空域改革试点', 'eVTOL 适航取证'],
@@ -558,12 +675,11 @@ const THEME_SEEDS: MarketTheme[] = [
     id: 'stablecoin',
     name: '稳定币 · 金融科技',
     alias: 'DIGITAL FINANCE',
-    stage: '分歧',
-    strength: 52,
-    crowding: 47,
-    heat: 4.4,
+    turnover: 95,
+    floatCap: 4200,
+    limitUp: 1,
     inflow: 1.8,
-    description: '跨境支付与数字资产基础设施的政策预期反复，交易重心转向有真实牌照与场景的公司。',
+    description: '政策预期反复，板块在低位重新蓄势，交易重心转向有真实牌照与场景的公司。',
     catalysts: ['香港稳定币牌照进展', '跨境支付试点扩容'],
     risk: '政策驱动为主，缺乏业绩锚，情绪退潮速度快。',
     etf: '金融科技ETF 516860',
@@ -576,23 +692,74 @@ const THEME_SEEDS: MarketTheme[] = [
   },
 ];
 
-function buildMainlines(): MainlinePayload {
+function buildMainlines(overview: MarketOverview): MainlinePayload {
+  const marketTurnover = overview.breadth.turnover;
+  const benchmark = overview.indices.find((i) => i.code === '000300') ?? overview.indices[0];
+  const marketChangePct = benchmark.changePct;
+
+  const themes: MarketTheme[] = THEME_SEEDS.map((seed) => {
+    const changePct = round(seed.leaders.reduce((a, l) => a + l.changePct, 0) / seed.leaders.length, 2);
+    const heat = round((seed.turnover / marketTurnover) * 100, 2);
+    const built = buildThemeModel({
+      changePct,
+      inflow: seed.inflow,
+      turnover: seed.turnover,
+      floatCap: seed.floatCap,
+      limitUp: seed.limitUp,
+      spark: seed.spark,
+      marketTurnover,
+      marketChangePct,
+    });
+    return {
+      ...seed,
+      changePct,
+      heat,
+      strength: built.strength,
+      crowding: built.crowding,
+      stage: built.stage,
+      model: built.model,
+    };
+  });
+
+  const ranked = [...themes].sort((a, b) => b.strength - a.strength);
+  const leader = ranked[0];
+  const leaderShort = leader.name.split(' · ')[0];
+  const top3Heat = round(
+    (themes
+      .slice()
+      .sort((a, b) => b.turnover - a.turnover)
+      .slice(0, 3)
+      .reduce((a, t) => a + t.turnover, 0) /
+      marketTurnover) *
+      100,
+    1,
+  );
+  const strongCool = ranked.filter((t) => t.strength >= 50 && t.crowding < 50);
+  const fading = themes.filter((t) => t.stage === '分歧' || t.stage === '退潮');
+
   return {
-    themes: THEME_SEEDS,
+    themes,
     events: [
       { date: '09.08', title: '北美云厂商上调资本开支指引，光模块板块启动', themeId: 'ai-optics', tone: 'up' },
       { date: '09.22', title: '硫化物电解质送样进展超预期，固态电池扩散', themeId: 'solid-battery', tone: 'up' },
       { date: '10.09', title: '人形机器人量产指引下修，板块进入分歧', themeId: 'humanoid', tone: 'down' },
       { date: '10.17', title: '大基金三期落地，半导体设备订单预期上修', themeId: 'semis', tone: 'up' },
       { date: '10.29', title: '创新药大额 BD 授权，出海逻辑重估', themeId: 'innovative-drug', tone: 'up' },
-      { date: '11.06', title: '聚变工程堆招标启动，主题进入萌芽期', themeId: 'fusion', tone: 'up' },
+      { date: '11.06', title: '聚变工程堆招标启动，主题由萌芽转入加速', themeId: 'fusion', tone: 'up' },
       { date: '11.13', title: '低空经济政策真空，龙头跌破 20 日线', themeId: 'low-altitude', tone: 'down' },
       { date: '11.21', title: '1.6T 光模块追加订单，算力主线再度加速', themeId: 'ai-optics', tone: 'up' },
     ],
     summary: [
-      '主线集中度处于近一年 87% 分位，算力链独占成交额近两成，结构极致但尚未出现明显背离。',
-      '固态电池与半导体设备处于「强度上行、拥挤度可控」的最佳区间，是当前风险收益比更优的方向。',
-      '人形机器人与稳定币进入分歧期，宜等待缩量回踩后的二次确认，而非追高。',
+      `${leaderShort}成交占比 ${leader.heat.toFixed(1)}%，强度 ${leader.strength} / 拥挤 ${leader.crowding}，${leader.stage}期；前三大主线合计 ${top3Heat}%。`,
+      strongCool.length
+        ? `${strongCool
+            .slice(0, 3)
+            .map((t) => t.name)
+            .join('、')}：强度 ≥50、拥挤 <50，仍在主升区。`
+        : '当前没有主线同时满足强度 ≥50 与拥挤度 <50。',
+      fading.length
+        ? `${fading.map((t) => `${t.name}（${t.stage}，${t.strength}/${t.crowding}）`).join('；')}，动量转弱。`
+        : '当前所有主线的强度与拥挤度同向，尚未出现分歧或退潮。',
     ],
     source: { provider: '演示数据 · 主线模型', mode: 'demo', asOf: AS_OF },
   };
@@ -833,43 +1000,58 @@ const STOCK_SEEDS: StockSeed[] = [
   },
 ];
 
-function buildCandles(seed: number, n: number, prevClose: number, price: number, amount: number): Candle[] {
+function buildCandles(
+  seed: number,
+  n: number,
+  prevClose: number,
+  price: number,
+  amount: number,
+  high52: number,
+  low52: number,
+): Candle[] {
   const dates = tradingDates(n);
   const r = rng(seed);
-  const start = prevClose * 0.72;
+  // 起点按现价在 52 周区间中的位置决定趋势：靠近高位则低起点，靠近低位则高起点。
+  const pos = clamp((price - low52) / Math.max(high52 - low52, 0.01), 0.02, 0.98);
+  const anchor = pos > 0.7 ? 0.86 : pos < 0.35 ? 1.14 : 1.0;
+  const start = clamp(price * anchor * (0.96 + r() * 0.08), low52 * 1.01, high52 * 0.99);
   const noise: number[] = [];
   let acc = 0;
   for (let i = 0; i < n; i++) {
-    acc += (r() - 0.5) * prevClose * 0.022;
+    acc += (r() - 0.5) * prevClose * 0.018;
     noise.push(acc);
   }
   const lastNoise = noise[n - 1];
   const closes = Array.from({ length: n }, (_, i) => {
     const trend = start + ((prevClose - start) * i) / (n - 1);
-    return trend + (noise[i] - (lastNoise * i) / (n - 1)) * 0.55;
+    return clamp(trend + (noise[i] - (lastNoise * i) / (n - 1)) * 0.55, low52, high52);
   });
   const candles: Candle[] = closes.map((close, i) => {
     const prev = i === 0 ? close * 0.99 : closes[i - 1];
-    const open = prev * (1 + (r() - 0.5) * 0.014);
-    const high = Math.max(open, close) * (1 + r() * 0.018);
-    const low = Math.min(open, close) * (1 - r() * 0.018);
-    const volume = round(18 + r() * 46 + Math.abs(close - prev) * 1.6, 1);
+    const c = clamp(close, low52, high52);
+    const open = clamp(prev * (1 + (r() - 0.5) * 0.014), low52, high52);
+    const high = clamp(Math.max(open, c) * (1 + r() * 0.018), Math.max(open, c), high52);
+    const low = clamp(Math.min(open, c) * (1 - r() * 0.018), low52, Math.min(open, c));
+    const volume = round(18 + r() * 46 + Math.abs(c - prev) * 1.6, 1);
     return {
       date: dates[i],
       open: round(open, 2),
       high: round(high, 2),
       low: round(low, 2),
-      close: round(close, 2),
+      close: round(c, 2),
       volume,
-      amount: round((volume * close) / 10000, 2),
+      amount: round((volume * c) / 10000, 2),
     };
   });
   const last = candles[n - 1];
-  last.close = price;
-  last.open = round(prevClose * (1 + (price > prevClose ? 0.006 : -0.004)), 2);
-  last.high = round(Math.max(last.open, price) * 1.012, 2);
-  last.low = round(Math.min(last.open, price) * 0.988, 2);
+  const todayClose = clamp(price, low52, high52);
+  const todayOpen = clamp(prevClose * (1 + (price > prevClose ? 0.006 : -0.004)), low52, high52);
+  last.close = round(todayClose, 2);
+  last.open = round(todayOpen, 2);
+  last.high = round(clamp(Math.max(todayOpen, todayClose) * 1.012, Math.max(todayOpen, todayClose), high52), 2);
+  last.low = round(clamp(Math.min(todayOpen, todayClose) * 0.988, low52, Math.min(todayOpen, todayClose)), 2);
   last.volume = round(46 + amount * 0.1, 1);
+  last.amount = round((last.volume * last.close) / 10000, 2);
   return candles;
 }
 
@@ -881,32 +1063,67 @@ function buildChips(price: number, seed: number): ChipLevel[] {
     const main = Math.exp(-((p - price * 0.985) ** 2) / (2 * (price * 0.045) ** 2));
     const accum = Math.exp(-((p - price * 0.9) ** 2) / (2 * (price * 0.028) ** 2)) * 0.55;
     const weight = Math.max(1.2, (main + accum) * 26 + r() * 3);
-    levels.push({ price: round(p, 2), weight: round(weight, 2) });
+    levels.push({ price: round(p, 2), weight });
   }
-  return levels;
+  const total = levels.reduce((a, l) => a + l.weight, 0);
+  return levels.map((l) => ({ ...l, weight: round((l.weight / total) * 100, 2) }));
 }
 
 function buildFinance(seed: StockSeed): FinanceRow[] {
   const r = rng(seed.seed + 5);
-  const quarters = ['2025Q2', '2025Q3', '2025Q4', '2026Q1', '2026Q2', '2026Q3'];
-  return quarters.map((period, i) => {
-    const season = [0.92, 1.0, 1.08, 0.88, 1.02, 1.12][i];
-    const revenue = round(seed.revBase * season * (0.9 + r() * 0.18), 2);
-    const profit = round(revenue * (seed.margin / 100) * (0.86 + r() * 0.22), 2);
+  const quarters = [
+    '2024Q2',
+    '2024Q3',
+    '2024Q4',
+    '2025Q1',
+    '2025Q2',
+    '2025Q3',
+    '2025Q4',
+    '2026Q1',
+    '2026Q2',
+    '2026Q3',
+  ];
+  const season = [0.92, 1.0, 1.08, 0.88, 0.92, 1.0, 1.08, 0.88, 1.02, 1.12];
+  const all = quarters.map((period, i) => {
+    const growth = 1 + 0.06 * Math.floor(i / 4);
+    const revenue = round(seed.revBase * season[i] * growth * (0.94 + r() * 0.12), 2);
+    const profit = round(revenue * (seed.margin / 100) * (0.9 + r() * 0.16), 2);
+    return { period, revenue, profit };
+  });
+  return all.slice(4).map((row, i) => {
+    const prior = all[i];
     return {
-      period,
-      revenue,
-      revenueYoy: round(8 + r() * 42, 1),
-      profit,
-      profitYoy: round(4 + r() * 58, 1),
-      margin: round((profit / revenue) * 100, 1),
+      period: row.period,
+      revenue: row.revenue,
+      revenueYoy: round((row.revenue / prior.revenue - 1) * 100, 1),
+      profit: row.profit,
+      profitYoy: round((row.profit / prior.profit - 1) * 100, 1),
+      margin: round((row.profit / row.revenue) * 100, 1),
     };
+  });
+}
+
+function buildPeHistory(currentPe: number, seed: number, n = 750): number[] {
+  const r = rng(seed + 11);
+  const start = currentPe * (0.65 + r() * 0.7);
+  const noise: number[] = [];
+  let acc = 0;
+  for (let i = 0; i < n; i++) {
+    acc += (r() - 0.5) * currentPe * 0.02;
+    noise.push(acc);
+  }
+  const lastNoise = noise[n - 1];
+  return Array.from({ length: n }, (_, i) => {
+    const trend = start + ((currentPe - start) * i) / (n - 1);
+    return round(Math.max(currentPe * 0.2, trend + noise[i] - (lastNoise * i) / (n - 1)), 2);
   });
 }
 
 function buildStock(seed: StockSeed): StockPayload {
   const prevClose = round(seed.price / (1 + seed.changePct / 100), 2);
   const change = round(seed.price - prevClose, 2);
+  const candles = buildCandles(seed.seed, 160, prevClose, seed.price, seed.amount, seed.high52, seed.low52);
+  const today = candles[candles.length - 1];
   const profile: StockProfile = {
     code: seed.code,
     name: seed.name,
@@ -915,11 +1132,11 @@ function buildStock(seed: StockSeed): StockPayload {
     price: seed.price,
     change,
     changePct: seed.changePct,
-    open: round(prevClose * (1 + (seed.changePct > 0 ? 0.004 : -0.003)), 2),
-    high: round(seed.price * 1.012, 2),
-    low: round(prevClose * 0.988, 2),
+    open: today.open,
+    high: today.high,
+    low: today.low,
     prevClose,
-    turnoverRate: seed.turnoverRate,
+    turnoverRate: round(seed.floatCap > 0 ? (seed.amount / seed.floatCap) * 100 : seed.turnoverRate, 2),
     amount: seed.amount,
     marketCap: seed.marketCap,
     floatCap: seed.floatCap,
@@ -929,17 +1146,20 @@ function buildStock(seed: StockSeed): StockPayload {
     low52: seed.low52,
     tags: seed.tags,
   };
-  const candles = buildCandles(seed.seed, 160, prevClose, seed.price, seed.amount);
   const r = rng(seed.seed + 9);
   const histDates = tradingDates(10).slice(1);
+  const mainRatio = clamp(seed.changePct * 0.012 + (r() - 0.5) * 0.055, -0.12, 0.12);
+  const main = round(seed.amount * mainRatio, 2);
+  const superLarge = round(main * (0.58 + r() * 0.12), 2);
+  const peHistory = seed.pe === null ? [] : buildPeHistory(seed.pe, seed.seed);
   return {
     profile,
     candles,
     capital: {
-      main: round(seed.amount * 0.18, 2),
-      superLarge: round(seed.amount * 0.11, 2),
-      large: round(seed.amount * 0.07, 2),
-      retail: round(-seed.amount * 0.06, 2),
+      main,
+      superLarge,
+      large: round(main - superLarge, 2),
+      retail: round(-main * (0.45 + r() * 0.25), 2),
       history: histDates.map((d) => ({
         label: d.slice(5),
         value: round((r() - 0.42) * seed.amount * 0.06, 2),
@@ -949,11 +1169,8 @@ function buildStock(seed: StockSeed): StockPayload {
     valuation: {
       pe: seed.pe ?? 0,
       pb: seed.pb,
-      percentile: seed.pe ? Math.round(48 + r() * 34) : 96,
-      history: Array.from({ length: 60 }, () => 0).map((_, i) => {
-        const base = seed.pe ?? 60;
-        return round(base * (0.7 + i * 0.006 + (r() - 0.5) * 0.16), 2);
-      }),
+      percentile: seed.pe === null ? null : percentileOf(peHistory, seed.pe),
+      history: peHistory,
       peersMedian: [
         { label: '行业中位', value: seed.peerMedian },
         { label: '全市场中位', value: 28.6 },
@@ -970,32 +1187,63 @@ function buildStock(seed: StockSeed): StockPayload {
 
 /* --------------------------------- 周期 --------------------------------- */
 
+export function indicatorStage(key: string, latest: number, delta: number): string {
+  if (key === 'pmi') {
+    if (latest >= 51) return '扩张加快';
+    if (latest >= 50) return '扩张区间';
+    return '收缩区间';
+  }
+  if (key === 'cpi') {
+    if (latest < 0) return '通缩';
+    if (latest < 1) return '低位';
+    if (latest < 3) return '温和';
+    return '高位';
+  }
+  if (key === 'ppi') {
+    if (latest < 0) return delta > 0 ? '负值收窄' : '低位徘徊';
+    return delta > 0 ? '上行' : '高位回落';
+  }
+  if (key === 'afre') return delta > 0 ? '信用企稳' : '信用收缩';
+  return '';
+}
+
+/**
+ * 48 个月序列：先按 trend（48 个月净变化）铺一条从 start 到 prev 的趋势，
+ * 再叠加季节项与噪声；末两点强制为 prev / latest，保证 delta 与页面一致。
+ */
 function buildIndicator(
   key: string,
   name: string,
   unit: string,
   latest: number,
+  delta: number,
   amp: number,
+  trend: number,
   seed: number,
-  stage: string,
   note: string,
   digits = 1,
 ): CycleIndicator {
   const dates = monthDates(48);
   const r = rng(seed);
-  const series = dates.map((_, i) =>
-    round(latest - Math.sin(i / 4.2) * amp * 0.6 + (r() - 0.5) * amp * 0.7 + (amp * i) / 96, digits),
-  );
-  series[series.length - 1] = latest;
-  const delta = round(latest - series[series.length - 2], digits);
+  const n = dates.length;
+  const prev = latest - delta;
+  const start = prev - trend;
+  const series = Array.from({ length: n }, (_, i) => {
+    const base = start + ((prev - start) * i) / (n - 2);
+    const cycle = Math.sin(i / 4.2 + seed * 0.13) * amp * 0.5;
+    const noise = (r() - 0.5) * amp * 0.35;
+    return round(base + cycle + noise, digits);
+  });
+  series[n - 2] = round(prev, digits);
+  series[n - 1] = latest;
   return {
     key,
     name,
     unit,
     latest,
-    delta,
+    delta: round(latest - series[n - 2], digits),
     percentile: percentileOf(series, latest),
-    stage,
+    stage: indicatorStage(key, latest, delta),
     note,
     dates,
     series,
@@ -1003,33 +1251,36 @@ function buildIndicator(
 }
 
 function buildCycle(): CyclePayload {
+  const indicators = [
+    buildIndicator('pmi', '制造业 PMI', '', 50.8, 0.4, 2.6, 0.8, 301, '连续 3 个月站上荣枯线，新订单分项回升'),
+    buildIndicator('cpi', 'CPI 同比', '%', 0.6, 0.2, 0.9, -2.0, 302, '食品项拖累减弱，核心 CPI 保持韧性'),
+    buildIndicator('ppi', 'PPI 同比', '%', -1.8, 0.5, 2.0, -6.0, 303, '上游价格环比转正，但同比仍待修复'),
+    buildIndicator('afre', '社融存量同比', '%', 8.4, 0.1, 0.6, -1.2, 304, '政府债支撑明显，企业中长贷边际改善'),
+  ];
+  const built = buildCycleModel(indicators);
+  const quadrants = [
+    {
+      id: 'recovery',
+      name: '复苏',
+      growth: '增长 ↑',
+      inflation: '通胀 ↓',
+      assets: ['权益', '可转债', '中长久期利率债'],
+    },
+    { id: 'overheat', name: '过热', growth: '增长 ↑', inflation: '通胀 ↑', assets: ['商品', '周期股', '短久期债'] },
+    { id: 'stagflation', name: '滞胀', growth: '增长 ↓', inflation: '通胀 ↑', assets: ['现金', '黄金', '防御'] },
+    { id: 'recession', name: '衰退', growth: '增长 ↓', inflation: '通胀 ↓', assets: ['长久期利率债', '高股息', '黄金'] },
+  ].map((q) => ({ ...q, active: q.name === built.phase }));
   return {
     clock: {
-      phase: '复苏',
-      x: -0.26,
-      y: 0.36,
-      note: '增长温和修复、通胀仍处低位，权益资产的估值与盈利同时具备向上弹性。',
-      next: '关注信用扩张能否延续，若通胀同步回升则逐步向「过热」过渡。',
-      quadrants: [
-        {
-          id: 'recovery',
-          name: '复苏',
-          growth: '增长 ↑',
-          inflation: '通胀 ↓',
-          assets: ['权益', '可转债', '中长久期利率债'],
-          active: true,
-        },
-        { id: 'overheat', name: '过热', growth: '增长 ↑', inflation: '通胀 ↑', assets: ['商品', '周期股', '短久期债'] },
-        { id: 'stagflation', name: '滞胀', growth: '增长 ↓', inflation: '通胀 ↑', assets: ['现金', '黄金', '防御'] },
-        { id: 'recession', name: '衰退', growth: '增长 ↓', inflation: '通胀 ↓', assets: ['长久期利率债', '高股息', '黄金'] },
-      ],
+      phase: built.phase,
+      x: built.x,
+      y: built.y,
+      note: built.note,
+      next: built.next,
+      quadrants,
+      model: built.model,
     },
-    indicators: [
-      buildIndicator('pmi', '制造业 PMI', '', 50.8, 2.4, 301, '扩张区间', '连续 3 个月站上荣枯线，新订单分项回升', 1),
-      buildIndicator('cpi', 'CPI 同比', '%', 0.6, 1.8, 302, '温和', '食品项拖累减弱，核心 CPI 保持韧性', 1),
-      buildIndicator('ppi', 'PPI 同比', '%', -1.8, 2.6, 303, '负值收窄', '上游价格环比转正，但同比仍待修复', 1),
-      buildIndicator('afre', '社融存量同比', '%', 8.4, 1.2, 304, '信用企稳', '政府债支撑明显，企业中长贷边际改善', 1),
-    ],
+    indicators,
     styleMatrix: [
       { name: '大盘成长', value: 2.4, note: '算力权重拉动' },
       { name: '小盘成长', value: 3.6, note: '主题扩散，弹性最强' },
@@ -1244,7 +1495,7 @@ export function buildMockDataset(): MockDataset {
   if (cached) return cached;
   const overview = buildOverview();
   const flow = buildFlow(overview);
-  const mainlines = buildMainlines();
+  const mainlines = buildMainlines(overview);
   const stocks: Record<string, StockPayload> = {};
   for (const seed of STOCK_SEEDS) stocks[seed.code] = buildStock(seed);
   const stockList: StockSummary[] = STOCK_SEEDS.map((s) => ({

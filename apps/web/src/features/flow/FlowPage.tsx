@@ -25,8 +25,8 @@ function FlowSankey({ nodes, links }: { nodes: FlowSankeyNode[]; links: FlowSank
   const [hover, setHover] = useState<string | null>(null);
   const padTop = 16;
   const leftBarX = 62;
-  const rightBarX = 12;
   const barW = 7;
+  const rightEdge = 12;
 
   const chart = useMemo(() => {
     if (!width) return null;
@@ -65,7 +65,18 @@ function FlowSankey({ nodes, links }: { nodes: FlowSankeyNode[]; links: FlowSank
     });
 
     const x1 = leftBarX + barW;
+    // 右侧必须为标签预留下宽度：文字一旦超出 viewBox 就被裁掉。
+    // 原先固定只留 5px，行业名几乎完全不可见。
+    const labelW = Math.ceil(
+      Math.max(
+        ...targets.map((n) => n.name.length * 11),
+        ...targets.map((n) => fmt(n.value, 0).length * 6.4),
+        24,
+      ),
+    );
+    const rightBarX = rightEdge + labelW + 7;
     const x2 = width - rightBarX - barW;
+    const labelX = x2 + barW + 7;
     const mid = (x1 + x2) / 2;
     const rendered = [] as Array<{
       key: string;
@@ -101,7 +112,7 @@ function FlowSankey({ nodes, links }: { nodes: FlowSankeyNode[]; links: FlowSank
         });
       }
     }
-    return { src, tgt, x1, x2, rendered, linkScale };
+    return { src, tgt, x1, x2, labelX, rendered, linkScale };
   }, [width, nodes, links, height]);
 
   if (!chart) return <div ref={ref} className="chart-frame" style={{ height }} />;
@@ -119,7 +130,7 @@ function FlowSankey({ nodes, links }: { nodes: FlowSankeyNode[]; links: FlowSank
           <text x={0} y={10} className="sankey-col-label">
             资金类型
           </text>
-          <text x={width - rightBarX} y={10} className="sankey-col-label" textAnchor="end">
+          <text x={chart.labelX} y={10} className="sankey-col-label">
             去向行业
           </text>
 
@@ -179,10 +190,10 @@ function FlowSankey({ nodes, links }: { nodes: FlowSankeyNode[]; links: FlowSank
               style={{ transition: 'opacity .2s ease', cursor: 'default' }}
             >
               <rect x={chart.x2} y={node.y} width={barW} height={node.h} fill="var(--brass)" opacity="0.8" rx={1} />
-              <text x={chart.x2 + barW + 7} y={node.y + node.h / 2 + 1} className="sankey-name">
+              <text x={chart.labelX} y={node.y + node.h / 2 + 1} className="sankey-name">
                 {node.name}
               </text>
-              <text x={chart.x2 + barW + 7} y={node.y + node.h / 2 + 11} className="sankey-val">
+              <text x={chart.labelX} y={node.y + node.h / 2 + 11} className="sankey-val">
                 {fmt(node.value, 0)}
               </text>
             </g>
@@ -342,7 +353,7 @@ export function FlowPage() {
           deck="主力资金的迁移方向，比涨跌幅更早暴露结构的拐点。"
         />
         <div className="grid">
-          <Panel idx="01" title="资金迁徙" className="span-8" bodyClass="center">
+          <Panel idx="01" title="买入资金结构" className="span-8" bodyClass="center">
             <div className="skeleton" style={{ width: '100%', height: 360 }} />
           </Panel>
           <Panel idx="02" title="资金水位" className="span-4" bodyClass="center">
@@ -354,11 +365,13 @@ export function FlowPage() {
   }
 
   const period = data.periods.find((p) => p.key === periodKey) ?? data.periods[0];
+  const today = data.periods[0];
   const rankRows = period.industries;
   const inflow = rankRows.filter((r) => r.mainNet > 0).slice(0, 8);
   const outflow = [...rankRows].filter((r) => r.mainNet < 0).sort((a, b) => a.mainNet - b.mainNet).slice(0, 8);
   const maxAbs = Math.max(...period.industries.map((r) => Math.abs(r.mainNet)), 1);
   const totalCapital = Math.abs(data.capital.superLarge) + Math.abs(data.capital.large) + Math.abs(data.capital.medium) + Math.abs(data.capital.small);
+  const allOrder = data.capital.superLarge + data.capital.large + data.capital.medium + data.capital.small;
 
   return (
     <div className="page">
@@ -366,7 +379,7 @@ export function FlowPage() {
         serial="02"
         kicker="CAPITAL ROTATION / 资金"
         title="行业资金流"
-        deck="主力资金的迁移方向，比涨跌幅更早暴露结构的拐点。看资金的「来路」与「去向」，而不是只看净流入排名。"
+        deck="不同单笔规模的资金在行业间的买入分布。毛买入不是净流入，净流入看下方行业表——两者口径不同，不能相加。"
         asOf={data.source.asOf}
         source={data.source}
         note="主力 = 超大单 + 大单 · 单位：亿元"
@@ -374,50 +387,55 @@ export function FlowPage() {
 
       <div className="stat-band">
         <div className="stat-band-item">
-          <span className="label">今日主力净流入</span>
+          <span className="label">主力净流入 · {period.label}</span>
           <span className={cx('stat-band-value display', toneOf(period.totalMainNet) === 'up' ? 'text-up' : 'text-down')}>
             {signed(period.totalMainNet, 1)}
           </span>
-          <span className="stat-band-note">亿元 · {period.label}</span>
+          <span className="stat-band-note">亿元 · 超大 + 大</span>
         </div>
         <div className="stat-band-item">
-          <span className="label">超大单</span>
-          <span className={cx('stat-band-value num', toneOf(data.capital.superLarge) === 'up' ? 'text-up' : 'text-down')}>
-            {signed(data.capital.superLarge, 1)}
+          <span className="label">超大单 · {period.label}</span>
+          <span className={cx('stat-band-value num', toneOf(period.totalSuperNet) === 'up' ? 'text-up' : 'text-down')}>
+            {signed(period.totalSuperNet, 1)}
           </span>
-          <span className="stat-band-note">亿元 · 机构主战场</span>
+          <span className="stat-band-note">亿元 · 按单笔金额估算</span>
         </div>
         <div className="stat-band-item">
-          <span className="label">大单</span>
-          <span className={cx('stat-band-value num', toneOf(data.capital.large) === 'up' ? 'text-up' : 'text-down')}>
-            {signed(data.capital.large, 1)}
+          <span className="label">大单 · {period.label}</span>
+          <span
+            className={cx(
+              'stat-band-value num',
+              toneOf(period.totalMainNet - period.totalSuperNet) === 'up' ? 'text-up' : 'text-down',
+            )}
+          >
+            {signed(period.totalMainNet - period.totalSuperNet, 1)}
           </span>
-          <span className="stat-band-note">亿元 · 游资与中型机构</span>
+          <span className="stat-band-note">亿元 · 按单笔金额估算</span>
         </div>
         <div className="stat-band-item">
           <span className="label">北向成交额</span>
           <span className="stat-band-value num">{fmt(data.northboundTurnover, 0)}</span>
-          <span className="stat-band-note">亿元 · 互联互通</span>
+          <span className="stat-band-note">亿元 · 成交总额（非净流入）</span>
         </div>
         <div className="stat-band-item">
           <span className="label">两融余额</span>
           <span className="stat-band-value num">{fmt(data.marginBalance / 10000, 2)}</span>
-          <span className="stat-band-note">万亿 · 杠杆水位</span>
+          <span className="stat-band-note">万亿 · 上一交易日</span>
         </div>
       </div>
 
       <div className="grid">
         <Panel
           idx="01"
-          title="资金迁徙"
-          sub="CAPITAL FLOW"
+          title="买入资金结构"
+          sub="GROSS BUY"
           className="span-8 panel--lead"
           bodyClass="tight"
-          aside={<span className="panel-note">买入资金结构 · 亿元</span>}
+          aside={<span className="panel-note">毛买入 · 亿元</span>}
           foot={
             <>
-              <span>颜色对应资金类型 · 线宽对应流入规模</span>
-              <span>电子 + 通信承接 {fmt((data.sankey.nodes.filter((n) => n.kind === 'target' && ['电子', '通信'].includes(n.name)).reduce((a, b) => a + b.value, 0)), 0)} 亿</span>
+              <span>毛买入 ≠ 净流入 · 颜色对应资金类型</span>
+              <span>电子 + 通信毛买入 {fmt((data.sankey.nodes.filter((n) => n.kind === 'target' && ['电子', '通信'].includes(n.name)).reduce((a, b) => a + b.value, 0)), 0)} 亿</span>
             </>
           }
         >
@@ -427,10 +445,15 @@ export function FlowPage() {
         <Panel idx="02" title="资金水位" sub="LIQUIDITY" className="span-4" bodyClass="tight fill">
           <div className="capital-hero">
             <span className="label">主力净流入 · 今日</span>
-            <span className={cx('capital-value display', toneOf(period.totalMainNet) === 'up' ? 'text-up' : 'text-down')}>
-              {signed(period.totalMainNet, 1)}
+            <span className={cx('capital-value display', toneOf(today.totalMainNet) === 'up' ? 'text-up' : 'text-down')}>
+              {signed(today.totalMainNet, 1)}
             </span>
             <span className="capital-unit">亿元</span>
+          </div>
+          <p className="panel-note">全单净额 {signed(allOrder, 1)} 亿 · 主力仅含超大单 + 大单</p>
+          <div className="capital-mix-head">
+            <span className="label">订单结构 · 全单</span>
+            <span className="panel-note">四类合计 {signed(allOrder, 1)} 亿</span>
           </div>
           <div className="capital-split">
             {[
@@ -615,7 +638,7 @@ export function FlowPage() {
                   <th>主力净流入</th>
                   <th>超大单</th>
                   <th>大单</th>
-                  <th>区间累计</th>
+                  <th>20日累计</th>
                   <th>占成交额</th>
                   <th>领涨股</th>
                 </tr>

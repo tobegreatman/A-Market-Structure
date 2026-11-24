@@ -356,10 +356,12 @@ export function StockPage() {
 
   const { profile, candles, capital, chips, valuation, finance, lhb, peers } = data;
   const tone = toneOf(profile.changePct);
-  const profitRatio = chips.filter((c) => c.price <= profile.price).reduce((a, b) => a + b.weight, 0);
+  const profitRatio = Math.min(100, chips.filter((c) => c.price <= profile.price).reduce((a, b) => a + b.weight, 0));
   const avgCost = weightedAverage(chips);
-  const superShare = Math.abs(capital.superLarge) / (Math.abs(capital.superLarge) + Math.abs(capital.large) + Math.abs(capital.retail)) * 100;
+  const superShare = profile.amount > 0 ? (Math.abs(capital.superLarge) / profile.amount) * 100 : 0;
   const maxCap = Math.max(Math.abs(capital.superLarge), Math.abs(capital.large), Math.abs(capital.retail), 1);
+  const mainTone = toneOf(capital.main);
+  const mainLabel = capital.main > 0 ? '净流入' : capital.main < 0 ? '净流出' : '持平';
 
   return (
     <div className="page">
@@ -451,9 +453,9 @@ export function StockPage() {
 
         <Panel idx="02" title="资金结构" sub="CAPITAL" className="span-4" bodyClass="tight fill">
           <div className="capital-summary">
-            <span className="label">今日主力净流入</span>
-            <span className={cx('display', capital.main >= 0 ? 'text-up' : 'text-down')}>{signed(capital.main, 1)}</span>
-            <span className="capital-unit">亿元 · 超大单占 {superShare.toFixed(0)}%</span>
+            <span className="label">今日主力{mainLabel}</span>
+            <span className={cx('display', `text-${mainTone}`)}>{signed(capital.main, 1)}</span>
+            <span className="capital-unit">亿元 · 超大单占成交额 {superShare.toFixed(1)}%</span>
           </div>
           <div className="capital-split">
             {[
@@ -466,10 +468,10 @@ export function StockPage() {
                 <Meter
                   value={Math.abs(item.value)}
                   max={maxCap}
-                  tone={item.value >= 0 ? 'up' : 'down'}
+                  tone={toneOf(item.value)}
                   height={3}
                 />
-                <span className={cx('num', item.value >= 0 ? 'text-up' : 'text-down')}>{signed(item.value, 1)}</span>
+                <span className={cx('num', `text-${toneOf(item.value)}`)}>{signed(item.value, 1)}</span>
               </div>
             ))}
           </div>
@@ -496,7 +498,7 @@ export function StockPage() {
 
           <div className="capital-meta">
             <div>
-              <span className="label">北向持股</span>
+              <span className="label">北向持股 · 季末</span>
               <span className="num">{fmt(data.northboundHolding, 1)} 亿</span>
             </div>
             <div>
@@ -532,7 +534,11 @@ export function StockPage() {
           sub="VALUATION"
           className="span-4"
           bodyClass="tight"
-          foot={<span>分位口径：近 3 年 PE (TTM) 日频序列</span>}
+          foot={
+            <span>
+              {valuation.percentile === null ? '亏损，PE (TTM) 分位不适用' : '分位口径：近 3 年 PE (TTM) 日频序列'}
+            </span>
+          }
         >
           <div className="valuation">
             <div className="valuation-head">
@@ -540,18 +546,30 @@ export function StockPage() {
                 <span className="label">PE (TTM)</span>
                 <span className="valuation-pe display">{profile.pe === null ? '亏损' : fmt(profile.pe, 1)}</span>
               </div>
-              <span className={cx('chip', valuation.percentile > 70 ? 'chip--up' : 'chip--brass')}>
-                3 年 {valuation.percentile}% 分位
-              </span>
+              {valuation.percentile === null ? (
+                <span className="chip chip--brass">PE 分位不适用</span>
+              ) : (
+                <span className={cx('chip', valuation.percentile > 70 ? 'chip--up' : 'chip--brass')}>
+                  3 年 {valuation.percentile}% 分位
+                </span>
+              )}
             </div>
-            <Sparkline data={valuation.history} height={46} tone="brass" />
-            <div className="valuation-scale">
-              <div className="valuation-scale-head">
-                <span className="label">历史分位</span>
-                <span className="num">{valuation.percentile}%</span>
+            {valuation.history.length > 1 ? (
+              <Sparkline data={valuation.history} height={46} tone="brass" />
+            ) : (
+              <div className="panel-note" style={{ height: 46, display: 'flex', alignItems: 'center' }}>
+                亏损期无 PE (TTM) 序列
               </div>
-              <Meter value={valuation.percentile} tone={valuation.percentile > 70 ? 'up' : 'brass'} height={4} />
-            </div>
+            )}
+            {valuation.percentile !== null && (
+              <div className="valuation-scale">
+                <div className="valuation-scale-head">
+                  <span className="label">历史分位</span>
+                  <span className="num">{valuation.percentile}%</span>
+                </div>
+                <Meter value={valuation.percentile} tone={valuation.percentile > 70 ? 'up' : 'brass'} height={4} />
+              </div>
+            )}
             <div className="valuation-rows">
               {valuation.peersMedian.map((item) => (
                 <div className="valuation-row" key={item.label}>
@@ -625,8 +643,14 @@ export function StockPage() {
               <div>
                 <span className="label">资金</span>
                 <p>
-                  今日主力净流入 <b className={capital.main >= 0 ? 'text-up' : 'text-down'}>{signed(capital.main, 1)} 亿</b>
-                  ，超大单占比 {superShare.toFixed(0)}%，大资金定价特征明显。
+                  今日主力{mainLabel}{' '}
+                  <b className={`text-${mainTone}`}>{signed(capital.main, 1)} 亿</b>
+                  ，超大单占成交额 {superShare.toFixed(1)}%，
+                  {capital.main > 0
+                    ? '大资金定价特征明显。'
+                    : capital.main < 0
+                      ? '资金分歧，反弹需要新的增量。'
+                      : '多空基本平衡，等待方向选择。'}
                 </p>
               </div>
             </div>
@@ -635,10 +659,16 @@ export function StockPage() {
               <div>
                 <span className="label">估值</span>
                 <p>
-                  PE 处于 3 年 <b>{valuation.percentile}% 分位</b>，
-                  {profile.pe === null
-                    ? '当前仍处亏损阶段，估值的锚在收入与订单。'
-                    : `${profile.pe > valuation.peersMedian[0].value ? '高于' : '低于'}行业中位 ${valuation.peersMedian[0].value.toFixed(1)} 倍。`}
+                  {valuation.percentile === null ? (
+                    '当前 PE (TTM) 为负，估值分位不适用；估值的锚在收入、订单与现金流。'
+                  ) : (
+                    <>
+                      PE 处于 3 年 <b>{valuation.percentile}% 分位</b>，
+                      {profile.pe === null
+                        ? '当前仍处亏损阶段，估值的锚在收入与订单。'
+                        : `${profile.pe > valuation.peersMedian[0].value ? '高于' : '低于'}行业中位 ${valuation.peersMedian[0].value.toFixed(1)} 倍。`}
+                    </>
+                  )}
                 </p>
               </div>
             </div>

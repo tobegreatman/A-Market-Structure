@@ -1,0 +1,21 @@
+/* ------------------------------------------------------------------
+ * 本地自托管字体
+ *
+ * 原先通过 <link> 引用 fonts.googleapis.com，该域名在境内网络下被阻断
+ * （net::ERR_CONNECTION_RESET），导致四个字族全部回退到系统字体，
+ * 排版与设计稿不符。改为从 npm 包内联，随构建产物一起分发：
+ * 无外部请求、无 DNS/TLS 开销、离线可用。
+ *
+ * 只取 latin 子集（每字重 15–53KB）。中文不下载 webfont，走系统栈，
+ * 原因见 tokens.css 中 --font-sans / --font-serif 的注释。
+ * ------------------------------------------------------------------ */
+
+/* DM Mono：所有数字与代码式标签，300/400/500 */
+@import '@fontsource/dm-mono/latin-300.css';
+@import '@fontsource/dm-mono/latin-400.css';
+@import '@fontsource/dm-mono/latin-500.css';
+
+/* Bodoni Moda：指数点位等大号数字。可变字体，含 opsz 光学尺寸轴，
+   浏览器按 font-size 自动选用合适的字形细节 */
+@import '@fontsource-variable/bodoni-moda/opsz.css';
+@import '@fontsource-variable/bodoni-moda/opsz-italic.css';

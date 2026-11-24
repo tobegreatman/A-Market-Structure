@@ -41,7 +41,7 @@ export class MarketService {
   }
 
   getFlow(period?: FlowPeriodKey) {
-    return this.cached('flow', () => this.provider.getFlow(period), 60_000);
+    return this.cached(`flow:${period ?? 'default'}`, () => this.provider.getFlow(period), 60_000);
   }
 
   getMainlines() {
