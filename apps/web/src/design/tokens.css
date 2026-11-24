@@ -1,0 +1,657 @@
+/* ============================================================
+   结构 STRUCTURE — design tokens
+   墨玉底色 / 黄铜强调 / 朱砂为涨 / 青玉为跌（A股惯例）
+   ============================================================ */
+
+:root {
+  /* RGB 三元组：供 rgba() 复用透明度，切主题时整体换基色 */
+  --ink-rgb: 236, 231, 217;
+  --brass-rgb: 201, 168, 106;
+  --shade-rgb: 8, 11, 10;
+  /* 热力图色块内的文字与色基 */
+  --on-heat: rgba(240, 236, 226, 0.94);
+  --on-heat-dim: rgba(240, 236, 226, 0.72);
+  --heat-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --heat-up-rgb: 236, 97, 73;
+  --heat-down-rgb: 47, 183, 143;
+  --heat-base: 0.07;
+  --heat-gain: 0.33;
+  --heat-gap: rgba(8, 11, 10, 0.55);
+  --clock-core: #0b100e;
+
+  --ink-0: #080b0a;
+  --ink-1: #0b100e;
+  --ink-2: #0f1512;
+  --ink-3: #141b17;
+  --ink-4: #1a231e;
+
+  --line: rgba(232, 226, 208, 0.1);
+  --line-2: rgba(232, 226, 208, 0.16);
+  --line-3: rgba(232, 226, 208, 0.24);
+
+  /* 文本四级：均通过 WCAG AA（4.5:1）于墨玉底 */
+  --text: #ece7d9;
+  --text-2: #c2bfb0;
+  --text-3: #9a9e91;
+  --text-4: #878d84;
+
+  /* 表面层级：画布 → 面板 → 一级面板，逐级提亮，保证深色下仍能读出结构 */
+  --surface-canvas: #0c1210;
+  --surface-panel-a: #161e1a;
+  --surface-panel-b: #121a16;
+  --surface-lead-a: #1c2621;
+  --surface-lead-b: #17211c;
+  --surface-th: #111815;
+  --surface-float: #121a16;
+  /* 面板之上的抬升卡片：比所属面板再亮一档，靠表面差而非描边立起来 */
+  --surface-raised: #1b2520;
+  --surface-raised-hover: #212d27;
+  --surface-tip: rgba(12, 18, 15, 0.97);
+  --surface-rail-a: #0e1512;
+  --surface-rail-b: #090e0c;
+  --surface-tape: rgba(12, 18, 15, 0.92);
+  --surface-band-a: rgba(22, 30, 26, 0.62);
+  --surface-band-b: rgba(9, 14, 11, 0.55);
+
+  --brass: #c9a86a;
+  --brass-strong: #e3c286;
+  --brass-dim: rgba(var(--brass-rgb), 0.14);
+  --brass-line: rgba(var(--brass-rgb), 0.32);
+
+  /* A股：红涨绿跌 */
+  --up: #ec6149;
+  --up-strong: #ff7d66;
+  --up-soft: rgba(236, 97, 73, 0.14);
+  --down: #2fb78f;
+  --down-strong: #47d1a7;
+  --down-soft: rgba(47, 183, 143, 0.13);
+
+  --steel: #7fa6c4;
+  --steel-soft: rgba(127, 166, 196, 0.14);
+  --clay: #cf8a63;
+
+  --font-display: 'Bodoni Moda', 'Noto Serif SC', 'Songti SC', serif;
+  --font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+  --font-sans: 'Noto Sans SC', 'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'DM Mono', 'SFMono-Regular', 'JetBrains Mono', Consolas, monospace;
+
+  --rail: 84px;
+  --page-pad: clamp(18px, 2.1vw, 36px);
+  --gap: 16px;
+  --radius: 3px;
+  --shadow: 0 22px 60px -30px rgba(0, 0, 0, 0.95);
+  --shadow-raised: 0 30px 80px -34px rgba(0, 0, 0, 1);
+
+  /* 字号阶梯：最小可见字号 10px，正文 13px，数值 15px */
+  --fs-micro: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 15px;
+  --fs-lg: 19px;
+  --fs-xl: 26px;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ============================================================
+   浅色主题（宣纸 / 墨字 / 赭石强调）
+   面板比画布更亮：纸页浮在桌面上，与深色主题的「柜台内凹」相反
+   ============================================================ */
+
+[data-theme='light'] {
+  --ink-rgb: 30, 34, 30;
+  --brass-rgb: 138, 106, 47;
+  --shade-rgb: 62, 56, 44;
+  --on-heat: rgba(26, 30, 25, 0.93);
+  --on-heat-dim: rgba(26, 30, 25, 0.68);
+  --heat-shadow: none;
+  --heat-up-rgb: 195, 58, 43;
+  --heat-down-rgb: 13, 122, 91;
+  /* 浅底上要给到更高不透明度，色块才看得出强弱 */
+  --heat-base: 0.1;
+  --heat-gain: 0.5;
+  --heat-gap: rgba(62, 56, 44, 0.16);
+  --clock-core: #fdfcf8;
+
+  --line: rgba(var(--ink-rgb), 0.13);
+  --line-2: rgba(var(--ink-rgb), 0.2);
+  --line-3: rgba(var(--ink-rgb), 0.3);
+
+  --text: #1b201c;
+  --text-2: #3c433c;
+  --text-3: #5b635a;
+  --text-4: #666d63;
+
+  --surface-canvas: #efece3;
+  --surface-panel-a: #fbfaf6;
+  --surface-panel-b: #f6f4ed;
+  --surface-lead-a: #ffffff;
+  --surface-lead-b: #fcfbf7;
+  --surface-th: #f4f1e8;
+  --surface-float: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-raised-hover: #fdfbf6;
+  --surface-tip: rgba(255, 255, 255, 0.98);
+  --surface-rail-a: #f7f4ec;
+  --surface-rail-b: #efece3;
+  --surface-tape: rgba(250, 248, 242, 0.92);
+  --surface-band-a: rgba(255, 255, 255, 0.72);
+  --surface-band-b: rgba(244, 241, 232, 0.6);
+
+  --brass: #82642c;
+  --brass-strong: #6a5020;
+  --brass-dim: rgba(var(--brass-rgb), 0.1);
+  --brass-line: rgba(var(--brass-rgb), 0.34);
+
+  --up: #bd3527;
+  --up-strong: #a52c1f;
+  --up-soft: rgba(189, 53, 39, 0.09);
+  --down: #0b7355;
+  --down-strong: #084a38;
+  --down-soft: rgba(11, 115, 85, 0.09);
+
+  --steel: #2f6a8f;
+  --steel-soft: rgba(47, 106, 143, 0.1);
+  --clay: #a2603a;
+
+  --shadow: 0 18px 40px -30px rgba(38, 42, 36, 0.3);
+  --shadow-raised: 0 24px 56px -34px rgba(38, 42, 36, 0.36);
+}
+
+/* 浅色下压掉发光层，避免纸面被光晕弄脏 */
+[data-theme='light'] .atmo-glow {
+  opacity: 0.22;
+}
+
+[data-theme='light'] .atmo-scan {
+  display: none;
+}
+
+[data-theme='light'] .atmo-grid {
+  opacity: 0.5;
+}
+
+[data-theme='light'] .atmo-mote {
+  display: none;
+}
+
+[data-theme='light'] .grain {
+  opacity: 0.02;
+  mix-blend-mode: multiply;
+}
+
+/* 浅底上把面积色压淡一档，避免小图发灰 */
+[data-theme='light'] .sparkline stop:first-child {
+  stop-opacity: 0.15;
+}
+
+/* 柱状图的渐隐在纸上会显得没底，改为浅渐隐 */
+[data-theme='light'] .dist-bar.up {
+  background: linear-gradient(180deg, var(--up), rgba(189, 53, 39, 0.55));
+}
+
+[data-theme='light'] .dist-bar.down {
+  background: linear-gradient(180deg, var(--down), rgba(11, 115, 85, 0.55));
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-canvas);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+  overflow-x: hidden;
+}
+
+/* 纸面颗粒 */
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
+}
+
+/* ============================================================
+   动态大气层：墨池微光 / 流动细网 / 掠过的高光 / 浮尘 / 指针微光
+   由 <Atmosphere /> 渲染，位于 #root 之下、颗粒之上
+   ============================================================ */
+
+.atmosphere {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* 基底：静态微光，兜住整体色调 */
+.atmo-base {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1100px 620px at 10% -10%, rgba(var(--brass-rgb), 0.05), transparent 62%),
+    radial-gradient(900px 540px at 96% -4%, rgba(47, 183, 143, 0.038), transparent 58%),
+    radial-gradient(800px 800px at 50% 120%, rgba(var(--brass-rgb), 0.024), transparent 60%);
+}
+
+/* ---------------------------- 漂移辉光 ---------------------------- */
+
+.atmo-glow {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate3d(0, 0, 0);
+  mix-blend-mode: screen;
+  will-change: transform, opacity;
+}
+
+.atmo-glow-a {
+  width: 64vw;
+  height: 52vw;
+  min-width: 760px;
+  min-height: 600px;
+  left: -16vw;
+  top: -22vw;
+  background: radial-gradient(closest-side, rgba(var(--brass-rgb), 0.18), rgba(var(--brass-rgb), 0.055) 54%, transparent 72%);
+  animation: atmoDriftA 28s ease-in-out infinite alternate;
+}
+
+.atmo-glow-b {
+  width: 54vw;
+  height: 46vw;
+  min-width: 600px;
+  min-height: 500px;
+  right: -15vw;
+  top: -18vw;
+  background: radial-gradient(closest-side, rgba(47, 183, 143, 0.13), rgba(47, 183, 143, 0.04) 54%, transparent 72%);
+  animation: atmoDriftB 34s ease-in-out infinite alternate;
+}
+
+.atmo-glow-c {
+  width: 82vw;
+  height: 40vw;
+  min-width: 800px;
+  min-height: 400px;
+  left: 50%;
+  bottom: -25vw;
+  margin-left: -41vw;
+  background: radial-gradient(closest-side, rgba(var(--brass-rgb), 0.07), rgba(127, 166, 196, 0.035) 46%, transparent 72%);
+  animation: atmoDriftC 42s ease-in-out infinite alternate;
+}
+
+@keyframes atmoDriftA {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.94);
+    opacity: 0.5;
+  }
+  50% {
+    transform: translate3d(6vw, 4vh, 0) scale(1.15);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(-4vw, 8vh, 0) scale(1.02);
+    opacity: 0.55;
+  }
+}
+
+@keyframes atmoDriftB {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translate3d(-5vw, 4vh, 0) scale(1.16);
+    opacity: 0.95;
+  }
+  100% {
+    transform: translate3d(3vw, 8vh, 0) scale(1.02);
+    opacity: 0.5;
+  }
+}
+
+@keyframes atmoDriftC {
+  0% {
+    transform: translate3d(-4vw, 0, 0) scale(0.92);
+    opacity: 0.4;
+  }
+  100% {
+    transform: translate3d(4vw, -2vh, 0) scale(1.08);
+    opacity: 0.85;
+  }
+}
+
+/* ---------------------------- 流动细网 ---------------------------- */
+
+.atmo-grid {
+  position: absolute;
+  inset: -64px;
+  background-image:
+    linear-gradient(to right, rgba(var(--ink-rgb), 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(var(--ink-rgb), 0.03) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(ellipse 100% 80% at 50% 0%, #000 30%, transparent 85%);
+  mask-image: radial-gradient(ellipse 100% 80% at 50% 0%, #000 30%, transparent 85%);
+  opacity: 0.8;
+  will-change: transform;
+  animation: atmoGridFlow 38s linear infinite;
+}
+
+@keyframes atmoGridFlow {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-56px, -56px, 0);
+  }
+}
+
+/* ---------------------------- 掠过的高光 ---------------------------- */
+
+.atmo-scan {
+  position: absolute;
+  top: -32%;
+  left: 0;
+  width: 30vw;
+  min-width: 380px;
+  height: 164%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(227, 194, 134, 0.07) 36%,
+    rgba(227, 194, 134, 0.16) 50%,
+    rgba(227, 194, 134, 0.07) 64%,
+    transparent
+  );
+  mix-blend-mode: screen;
+  filter: blur(6px);
+  opacity: 0;
+  will-change: transform, opacity;
+  transform: rotate(12deg) translate3d(-60vw, 0, 0);
+  animation: atmoSweep 14s cubic-bezier(0.4, 0, 0.25, 1) 2s infinite;
+}
+
+@keyframes atmoSweep {
+  0% {
+    transform: rotate(12deg) translate3d(-60vw, 0, 0);
+    opacity: 0;
+  }
+  9% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 0.65;
+  }
+  64% {
+    transform: rotate(12deg) translate3d(118vw, 0, 0);
+    opacity: 0;
+  }
+  100% {
+    transform: rotate(12deg) translate3d(118vw, 0, 0);
+    opacity: 0;
+  }
+}
+
+/* ------------------------------- 浮尘 ------------------------------- */
+
+.atmo-mote {
+  position: absolute;
+  left: var(--x, 20%);
+  bottom: -16px;
+  width: var(--s, 2px);
+  height: var(--s, 2px);
+  border-radius: 50%;
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: atmoMote var(--dur, 40s) linear var(--delay, 0s) infinite;
+}
+
+.atmo-mote.brass {
+  background: var(--brass-strong);
+  box-shadow: 0 0 7px rgba(227, 194, 134, 0.55);
+}
+
+.atmo-mote.jade {
+  background: var(--down-strong);
+  box-shadow: 0 0 7px rgba(71, 209, 167, 0.45);
+}
+
+@keyframes atmoMote {
+  0% {
+    transform: translate3d(0, 0, 0);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.55;
+  }
+  55% {
+    opacity: 0.28;
+  }
+  100% {
+    transform: translate3d(var(--drift, 24px), -104vh, 0);
+    opacity: 0;
+  }
+}
+
+/* ----------------------------- 指针微光 ----------------------------- */
+
+.atmo-pointer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 700px;
+  height: 700px;
+  margin: -350px 0 0 -350px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(227, 194, 134, 0.095), rgba(var(--brass-rgb), 0.032) 52%, transparent 72%);
+  transform: translate3d(var(--atmo-x, 46vw), var(--atmo-y, 32vh), 0);
+  transition: transform 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+  opacity: 0;
+  will-change: transform;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .atmo-pointer {
+    opacity: 1;
+  }
+}
+
+#root {
+  position: relative;
+  z-index: 2;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+button,
+a,
+input {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: rgba(var(--brass-rgb), 0.28);
+  color: #fff;
+}
+
+:focus-visible {
+  outline: 1px solid var(--brass);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(var(--brass-rgb), 0.18);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--brass-rgb), 0.34);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ---------------------------- utilities ---------------------------- */
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.serif {
+  font-family: var(--font-serif);
+}
+
+.display {
+  font-family: var(--font-display);
+  font-feature-settings: 'lnum' 1;
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+
+.text-up {
+  color: var(--up);
+}
+
+.text-down {
+  color: var(--down);
+}
+
+.text-flat {
+  color: var(--text-2);
+}
+
+.text-brass {
+  color: var(--brass);
+}
+
+.dim {
+  color: var(--text-3);
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+/* ---------------------------- motion ---------------------------- */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pageIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(var(--brass-rgb), 0.4);
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 0 5px rgba(var(--brass-rgb), 0);
+  }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

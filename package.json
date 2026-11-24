@@ -1,0 +1,26 @@
+{
+  "name": "a-market-structure",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A股行情结构分析终端 — 盘面 / 资金流 / 主线 / 个股 / 周期 / 知识宇宙",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c yellow,cyan \"npm run dev -w @am/api\" \"npm run dev -w @am/web\"",
+    "dev:web": "npm run dev -w @am/web",
+    "dev:api": "npm run dev -w @am/api",
+    "build": "npm run build -w @am/web",
+    "preview": "npm run preview -w @am/web",
+    "start": "npm run start -w @am/api",
+    "typecheck": "npm run typecheck -w @am/web && npm run typecheck -w @am/api"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
